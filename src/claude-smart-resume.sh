@@ -14,7 +14,7 @@
 # The real claude binary is called via its absolute path so the alias
 # doesn't recurse.
 
-CLAUDE_BIN="${CLAUDE_BIN:-$(which claude 2>/dev/null || echo /usr/local/bin/claude)}"
+CLAUDE_BIN="/home/karthik/.local/bin/claude"
 PROJECTS_DIR="${HOME}/.claude/projects"
 BUFFER_SECS=60
 
