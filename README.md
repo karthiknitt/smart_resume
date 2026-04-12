@@ -1,6 +1,7 @@
 # Smart Resume For Claude Code
 
-**by Karthikeyan N · MIT License**
+**Author: Karthikeyan N 
+ License: MIT License**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform: Linux](https://img.shields.io/badge/Platform-Linux-blue.svg)](#)
