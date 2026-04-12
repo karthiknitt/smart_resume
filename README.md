@@ -11,7 +11,7 @@
 > [!IMPORTANT]
 > **Disclaimer:** Claude Code is a product of Anthropic, PBC. "Claude" and "Claude Code"
 > are trademarks of Anthropic. All rights to Claude Code and its associated trademarks
-> and copyrights are owned by Anthropic. **Smart Resume** is an independent, community-built
+> and copyrights are owned by Anthropic. **Smart Resume** is an independently-built
 > tool. It is not affiliated with, endorsed by, or officially connected to Anthropic in
 > any way.
 
