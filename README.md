@@ -92,12 +92,6 @@ cd smart_resume
 ./install.sh
 ```
 
-Or as a one-liner:
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/karthiknitt/smart_resume/main/install.sh)
-```
-
 The installer will:
 1. Detect your `claude` binary path automatically
 2. Copy `claude-smart-resume.sh` and `statusline.sh` to `~/.claude/`
@@ -107,6 +101,13 @@ The installer will:
 6. Print a summary of everything done
 
 Running the installer twice is safe — it is fully **idempotent**.
+
+**After installation, the cloned repo is no longer needed.** The scripts are copied
+into `~/.claude/` — that is what runs. You can delete the repo directory:
+
+```bash
+cd .. && rm -rf smart_resume
+```
 
 ---
 
