@@ -1,0 +1,48 @@
+name: Feature Request
+description: Suggest an improvement or new capability
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Got an idea? Describe it below. The more context you provide, the easier it is to evaluate.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the gap or friction point this feature would address.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What would you like to see added or changed?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds or alternative approaches you've thought about?
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform relevance
+      description: Which platform(s) does this apply to?
+      multiple: true
+      options:
+        - Linux
+        - macOS (v0.2)
+        - Windows WSL (v0.2)
+        - All platforms
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Anything else that would help — links, prior art, shell snippets, etc.

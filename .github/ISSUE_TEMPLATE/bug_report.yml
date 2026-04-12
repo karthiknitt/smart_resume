@@ -1,0 +1,68 @@
+name: Bug Report
+description: Something isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill in as much detail as you can.
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Linux
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: shell
+    attributes:
+      label: Shell
+      description: Output of `echo $SHELL`
+      placeholder: /usr/bin/zsh
+    validations:
+      required: true
+
+  - type: input
+    id: claude_version
+    attributes:
+      label: Claude Code version
+      description: Output of `claude --version`
+      placeholder: "1.x.x"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the bug clearly. What did you expect vs. what actually occurred?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start a Claude session with `claude`
+        2. Wait for rate limit to hit
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: terminal_output
+    attributes:
+      label: Terminal output
+      description: Paste the relevant terminal output here (redact any sensitive info).
+      render: shell
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Any other context — OS version, install method, related aliases, etc.
