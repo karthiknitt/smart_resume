@@ -5,8 +5,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform: Linux](https://img.shields.io/badge/Platform-Linux-blue.svg)](#)
 [![Shell: zsh](https://img.shields.io/badge/Shell-zsh-green.svg)](#)
-[![macOS: Coming v0.2](https://img.shields.io/badge/macOS-Coming%20v0.2-lightgrey.svg)](#platforms)
-[![Windows WSL: Coming v0.2](https://img.shields.io/badge/Windows%20WSL-Coming%20v0.2-lightgrey.svg)](#platforms)
+[![macOS: Coming v0.3](https://img.shields.io/badge/macOS-Coming%20v0.3-lightgrey.svg)](#platforms)
+[![Windows WSL](https://img.shields.io/badge/Windows%20WSL-v0.2-blue.svg)](#platforms)
 
 > [!IMPORTANT]
 > **Disclaimer:** Claude Code is a product of Anthropic, PBC. "Claude" and "Claude Code"
@@ -184,6 +184,34 @@ Replace `/home/yourname` with your actual home directory path.
 
 ---
 
+## Windows (WSL) Notes
+
+WSL runs a full Linux kernel, so Smart Resume works identically to the Linux version.
+The installer auto-detects WSL and copies the correct wrapper automatically.
+
+**One WSL-specific consideration: where Claude Code stores sessions.**
+
+**Option A — Claude installed natively inside WSL** (most common):
+
+Sessions are stored at `~/.claude/projects/` inside WSL. No extra config needed —
+the installer handles everything.
+
+**Option B — Windows Claude Code app called via WSL path interop:**
+
+Sessions are stored in the Windows user profile. After installation, open
+`~/.claude/claude-smart-resume.sh` and update `PROJECTS_DIR` at the top:
+
+```zsh
+WIN_USER="YourWindowsUsername"
+CLAUDE_BIN="/mnt/c/Users/${WIN_USER}/AppData/Local/AnthropicClaude/claude.exe"
+PROJECTS_DIR="/mnt/c/Users/${WIN_USER}/AppData/Roaming/Claude/projects"
+```
+
+**To check which applies:** run `ls ~/.claude/projects/` after a Claude session.
+If the directory is empty, sessions are going to the Windows path (Option B).
+
+---
+
 ## Trusting Your Projects Folder
 
 If Claude Code asks **"Do you trust this folder?"** every time you start a session
@@ -290,8 +318,8 @@ alias mybot="env -u MY_TOKEN $HOME/.claude/claude-smart-resume.sh --channels ...
 | Platform | Status |
 |----------|--------|
 | Linux | **Available — v0.1** |
-| macOS | Coming in v0.2 |
-| Windows (WSL) | Coming in v0.2 |
+| Windows (WSL) | **Available — v0.2** |
+| macOS | Coming in v0.3 |
 
 ---
 

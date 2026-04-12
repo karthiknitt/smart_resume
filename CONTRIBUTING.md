@@ -51,9 +51,24 @@ This project is zsh shell script. A few rules to follow:
 
 ---
 
+## Test Suite
+
+A test suite is included at `src/test-smart-resume.zsh` for developers who want
+to explore or verify the core functions. It covers session naming, rate-limit
+parsing, time/epoch logic, and PID discovery (43 tests). Run it with:
+
+```bash
+zsh src/test-smart-resume.zsh
+```
+
+It is not part of CI — it is reference material. Tests 40–43 (PID discovery via
+`/proc`) only pass on Linux and WSL.
+
+---
+
 ## Platforms
 
-v0.1 is Linux only. macOS and Windows WSL are planned for v0.2. If you are
+v0.1 added Linux. v0.2 added Windows WSL. macOS is planned for v0.3. If you are
 contributing platform support, open an issue first to coordinate.
 
 ---
