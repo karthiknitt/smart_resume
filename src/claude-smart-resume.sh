@@ -14,7 +14,7 @@
 # The real claude binary is called via its absolute path so the alias
 # doesn't recurse.
 
-CLAUDE_BIN="/home/karthik/.local/bin/claude"
+CLAUDE_BIN="${CLAUDE_BIN:-$(which claude 2>/dev/null || echo /usr/local/bin/claude)}"
 PROJECTS_DIR="${HOME}/.claude/projects"
 BUFFER_SECS=60
 
@@ -100,43 +100,21 @@ parse_reset_epoch() {
 }
 
 # ---------------------------------------------------------------------------
-# Countdown display: prints once every 10 minutes, more often in final 5 min
-# Ctrl-C during the wait prints resume instructions and exits cleanly.
+# Wait until wake_epoch. Prints nothing — the banner already shows the time.
+# Ctrl-C prints resume instructions and exits cleanly.
 # ---------------------------------------------------------------------------
 show_countdown() {
   local wake_epoch="$1" session_name="$2" session_id="$3"
-  local resume_at
-  resume_at=$(date -d "@${wake_epoch}" '+%H:%M %Z')
 
   trap '
-    printf "\r\e[2K" >&2
     printf "\n  \e[33mCancelled.\e[0m Resume manually when limits clear:\n" >&2
-    printf "    claude --resume %s\n\n" "'"$session_id"'" >&2
+    printf "  claude --resume %s\n\n" "'"$session_id"'" >&2
     exit 0
   ' INT
 
-  while true; do
-    local now remaining hrs mins secs
-    now=$(date +%s)
-    remaining=$(( wake_epoch - now ))
-    (( remaining <= 0 )) && break
+  local sleep_secs=$(( wake_epoch - $(date +%s) ))
+  (( sleep_secs > 0 )) && sleep "$sleep_secs"
 
-    hrs=$(( remaining / 3600 ))
-    mins=$(( (remaining % 3600) / 60 ))
-    secs=$(( remaining % 60 ))
-
-    if (( hrs > 0 )); then
-      printf '\r\e[2K  \e[33m↻ %d:%02d:%02d remaining — resuming "%s" at %s\e[0m' \
-        "$hrs" "$mins" "$secs" "$session_name" "$resume_at" >&2
-    else
-      printf '\r\e[2K  \e[33m↻ %d:%02d remaining — resuming "%s" at %s\e[0m' \
-        "$mins" "$secs" "$session_name" "$resume_at" >&2
-    fi
-
-    sleep 1
-  done
-
-  printf '\r\e[2K' >&2   # clear the countdown line before the resume banner
   trap - INT
 }
 
@@ -187,7 +165,7 @@ _rl_watcher() {
     current=$(wc -l < "$session_file" 2>/dev/null || echo 0)
     (( current <= baseline )) && continue
 
-    if tail -n +"$(( baseline + 1 ))" "$session_file" 2>/dev/null \
+    if tail -n "+$(( baseline + 1 ))" "$session_file" 2>/dev/null \
         | grep -qi 'resets .*('; then
       sleep 0.3   # let claude finish writing the entry
       kill -INT "$claude_pid" 2>/dev/null
@@ -216,18 +194,13 @@ _run_claude() {
 
   # Start the watcher before claude. It waits for claude to appear as a child
   # of this shell, then hands off to the standard two-phase RL monitor.
-  # /proc/self/pid gives the watcher subshell's own PID (Linux), so we can
-  # exclude it from the children list and not mistake it for claude.
   (
-    # /proc/self/pid doesn't exist on Linux — use /proc/self/stat (first field = PID).
-    # read is a builtin so /proc/self resolves to THIS subshell's PID, not a child's.
     local watcher_self=0 _stat_line
     read -r _stat_line < /proc/self/stat 2>/dev/null \
-      && watcher_self=${_stat_line%% *}   # trim everything after first space
+      && watcher_self=${_stat_line%% *}
 
     local claude_pid='' i=0
     while (( i++ < 200 )) && [[ -z "$claude_pid" ]]; do
-      # Read children: /proc fast path (Linux), pgrep fallback
       local raw=''
       read -r raw < "/proc/${my_pid}/task/${my_pid}/children" 2>/dev/null \
         || raw=$(pgrep -d' ' -P "$my_pid" 2>/dev/null) || true
@@ -242,17 +215,9 @@ _run_claude() {
   ) > /dev/null 2>/dev/null &
   local watcher_pid=$!
 
-  # Protect the wrapper from Ctrl+C while claude runs.
-  # 'true' (not '') keeps the trap catchable: the child (claude/Node.js) resets
-  # inherited signal handlers on startup, so SIGINT still reaches claude.
-  # The wrapper catches the signal after claude exits and does nothing (continues).
   trap 'true' INT
-
-  # Run claude in the foreground — direct child, terminal inherited naturally.
-  # No MONITOR, no job notifications, no fg/bg dance, no tcsetpgrp.
   "$CLAUDE_BIN" "$@"
-
-  trap - INT   # restore default SIGINT for the countdown/resume phase
+  trap - INT
 
   kill "$watcher_pid" 2>/dev/null
   wait "$watcher_pid" 2>/dev/null
@@ -265,21 +230,17 @@ resume_id=""     # empty = first run, non-empty = resume run
 resume_msg="Rate limits have reset — continuing where we left off."
 
 while true; do
-  # --- Run claude (first time: pass original args; subsequent: --resume) ---
   if [[ -z "$resume_id" ]]; then
     _run_claude "$@"
   else
     _run_claude --resume "$resume_id" "$resume_msg"
   fi
 
-  # --- After claude exits, check whether we hit a rate limit ---
   local session_file
   session_file=$(find_latest_session)
   [[ -z "$session_file" || ! -f "$session_file" ]] && break
 
-  # --- Determine reset epoch ---
-  # Fast path: statusline hook wrote pre-computed Unix epochs to the flag file.
-  # Fallback: grep+parse the JSONL (for installs without the statusline hook).
+  # Determine reset epoch — fast path via flag file, fallback via JSONL grep
   local reset_epoch=""
   local rl_warn_flag="${HOME}/.claude/.rl_warn"
 
@@ -289,7 +250,6 @@ while true; do
     rl_5h_reset=$(grep '^5h_reset=' "$rl_warn_flag" | cut -d= -f2)
     rl_7d_pct=$(grep   '^7d_pct='   "$rl_warn_flag" | cut -d= -f2)
     rl_7d_reset=$(grep '^7d_reset=' "$rl_warn_flag" | cut -d= -f2)
-    # Use the epoch of whichever limit hit harder
     if (( ${rl_5h_pct:-0} >= ${rl_7d_pct:-0} )); then
       reset_epoch=${rl_5h_reset:-0}
     else
@@ -299,10 +259,9 @@ while true; do
   fi
 
   if [[ -z "$reset_epoch" ]]; then
-    # Fallback: parse the JSONL for the "resets …(" text pattern
     local reset_info
     reset_info=$(get_reset_info "$session_file")
-    [[ -z "$reset_info" ]] && break   # clean exit — no rate limit detected
+    [[ -z "$reset_info" ]] && break
 
     local reset_time reset_tz
     reset_time=$(echo "$reset_info" | awk '{print $1}')
@@ -312,7 +271,6 @@ while true; do
 
   local wake_epoch=$(( reset_epoch + BUFFER_SECS ))
 
-  # --- Auto-name the session if unnamed ---
   local session_id
   session_id=$(basename "$session_file" .jsonl)
 
@@ -325,7 +283,6 @@ while true; do
 
   local sleep_secs=$(( wake_epoch - $(date +%s) ))
 
-  # --- Print the wait banner ---
   local _bar='──────────────────────────────────────────────────────'
   printf '\n' >&2
   printf '  \e[36m╭%s╮\e[0m\n' "$_bar" >&2
@@ -343,10 +300,8 @@ while true; do
   printf '  \e[2mPress Ctrl-C to cancel\e[0m\n' >&2
   printf '\n' >&2
 
-  # --- Wait with a live countdown ---
   show_countdown "$wake_epoch" "$session_name" "$session_id"
 
-  # --- Resume ---
   printf '\n' >&2
   printf '  \e[36m╭%s╮\e[0m\n' "$_bar" >&2
   printf '  \e[36m│\e[0m  \e[1;32m✓ Resuming\e[0m  \e[33m"%s"\e[0m\n' "$session_name" >&2
