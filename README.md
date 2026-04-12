@@ -8,10 +8,12 @@
 [![macOS: Coming v0.2](https://img.shields.io/badge/macOS-Coming%20v0.2-lightgrey.svg)](#platforms)
 [![Windows WSL: Coming v0.2](https://img.shields.io/badge/Windows%20WSL-Coming%20v0.2-lightgrey.svg)](#platforms)
 
-> [!NOTE]
-> Claude Code is a registered trademark of Anthropic, PBC. All Claude Code-related
-> trademarks and copyrights are the property of Anthropic. This project is **not**
-> affiliated with or endorsed by Anthropic in any way.
+> [!IMPORTANT]
+> **Disclaimer:** Claude Code is a product of Anthropic, PBC. "Claude" and "Claude Code"
+> are trademarks of Anthropic. All rights to Claude Code and its associated trademarks
+> and copyrights are owned by Anthropic. **Smart Resume** is an independent, community-built
+> tool. It is not affiliated with, endorsed by, or officially connected to Anthropic in
+> any way.
 
 When Claude Code hits a rate limit, it exits mid-session. **Smart Resume** makes it
 automatically wait until the limit clears and resume your session in the same terminal
@@ -299,6 +301,25 @@ alias mybot="env -u MY_TOKEN $HOME/.claude/claude-smart-resume.sh --channels ...
 - **Blind before 90%** — if a hard cap hits before statusline reaches 90%, Phase 1 stays idle and the RL menu shows normally. Wrapper still resumes correctly after clean exit.
 - **CWD-based session lookup** — session is found by current directory. Falls back to most-recent global session if you `cd` elsewhere.
 - **Clean exit required** — if Claude crashes or is force-killed, the JSONL may not contain the rate-limit line and the wrapper won't trigger.
+
+---
+
+## Disclaimer
+
+**Smart Resume** is an independent, community-built tool created by
+[Karthikeyan N](https://github.com/karthiknitt).
+
+- **Claude Code** is a product of [Anthropic, PBC](https://www.anthropic.com).
+- **"Claude"** and **"Claude Code"** are trademarks of Anthropic. All rights to Claude Code
+  and its associated trademarks, service marks, and copyrights are the exclusive property
+  of Anthropic.
+- This project is **not affiliated with, endorsed by, sponsored by, or officially connected
+  to Anthropic** in any way.
+- The name "Smart Resume For Claude Code" is used purely to describe what this tool does —
+  it is not intended to imply any official relationship with Anthropic or the Claude product
+  family.
+
+Use of Claude Code itself is subject to [Anthropic's Terms of Service](https://www.anthropic.com/legal/consumer-terms).
 
 ---
 
