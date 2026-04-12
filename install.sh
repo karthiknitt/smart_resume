@@ -3,17 +3,45 @@
 # by Karthikeyan N · MIT License
 #
 # Usage:
-#   ./install.sh
-#
-# Or one-liner (from the repo root):
-#   bash <(curl -fsSL https://raw.githubusercontent.com/karthiknitt/smart_resume/main/install.sh)
+#   git clone https://github.com/karthiknitt/smart_resume.git
+#   cd smart_resume && ./install.sh
 
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_DIR="${HOME}/.claude"
-WRAPPER_NAME="claude-smart-resume.sh"
+WRAPPER_NAME="claude-smart-resume.sh"   # destination — always the same name
 STATUSLINE_NAME="statusline.sh"
+
+# ---------------------------------------------------------------------------
+# Platform detection
+# ---------------------------------------------------------------------------
+detect_platform() {
+  if grep -qi microsoft /proc/version 2>/dev/null; then
+    echo "wsl"
+  elif [[ "$(uname -s)" == "Darwin" ]]; then
+    echo "macos"
+  else
+    echo "linux"
+  fi
+}
+
+PLATFORM=$(detect_platform)
+case "$PLATFORM" in
+  wsl)   PLATFORM_LABEL="WSL (Windows Subsystem for Linux)"
+         WRAPPER_SRC="claude-smart-resume-wsl.sh" ;;
+  macos) PLATFORM_LABEL="macOS"
+         WRAPPER_SRC="claude-smart-resume-macos.sh" ;;
+  *)     PLATFORM_LABEL="Linux"
+         WRAPPER_SRC="claude-smart-resume.sh" ;;
+esac
+
+# Guard: abort early if platform script not bundled yet
+if [[ ! -f "${REPO_DIR}/src/${WRAPPER_SRC}" ]]; then
+  printf '\n  \e[31m✗\e[0m macOS support is not yet available. Coming in v0.3.\n'
+  printf '    See: https://github.com/karthiknitt/smart_resume/releases\n\n'
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # ANSI helpers
@@ -46,6 +74,7 @@ info()    { printf "  $(_dim '·') %s\n" "$*"; }
 # ---------------------------------------------------------------------------
 detect_claude_bin() {
   step "Detecting Claude Code binary path..."
+  info "Detected platform: $(_bold "$PLATFORM_LABEL")"
 
   # If we're running inside the wrapper alias, `which claude` would return the
   # wrapper itself. Use `command -v` on the real binary via PATH lookup only.
@@ -83,7 +112,7 @@ copy_scripts() {
 
   mkdir -p "$CLAUDE_DIR"
 
-  cp "${REPO_DIR}/src/${WRAPPER_NAME}"   "${CLAUDE_DIR}/${WRAPPER_NAME}"
+  cp "${REPO_DIR}/src/${WRAPPER_SRC}"    "${CLAUDE_DIR}/${WRAPPER_NAME}"
   cp "${REPO_DIR}/src/${STATUSLINE_NAME}" "${CLAUDE_DIR}/${STATUSLINE_NAME}"
 
   chmod +x "${CLAUDE_DIR}/${WRAPPER_NAME}"

@@ -6,8 +6,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform: Linux](https://img.shields.io/badge/Platform-Linux-blue.svg)](#)
 [![Shell: zsh](https://img.shields.io/badge/Shell-zsh-green.svg)](#)
-[![macOS: Coming v0.2](https://img.shields.io/badge/macOS-Coming%20v0.2-lightgrey.svg)](#platforms)
-[![Windows WSL: Coming v0.2](https://img.shields.io/badge/Windows%20WSL-Coming%20v0.2-lightgrey.svg)](#platforms)
+[![macOS: Coming v0.3](https://img.shields.io/badge/macOS-Coming%20v0.3-lightgrey.svg)](#platforms)
+[![Windows WSL](https://img.shields.io/badge/Windows%20WSL-v0.2-blue.svg)](#platforms)
 
 > [!IMPORTANT]
 > **Disclaimer:** Claude Code is a product of Anthropic, PBC. "Claude" and "Claude Code"
@@ -185,6 +185,34 @@ Replace `/home/yourname` with your actual home directory path.
 
 ---
 
+## Windows (WSL) Notes
+
+WSL runs a full Linux kernel, so Smart Resume works identically to the Linux version.
+The installer auto-detects WSL and copies the correct wrapper automatically.
+
+**One WSL-specific consideration: where Claude Code stores sessions.**
+
+**Option A — Claude installed natively inside WSL** (most common):
+
+Sessions are stored at `~/.claude/projects/` inside WSL. No extra config needed —
+the installer handles everything.
+
+**Option B — Windows Claude Code app called via WSL path interop:**
+
+Sessions are stored in the Windows user profile. After installation, open
+`~/.claude/claude-smart-resume.sh` and update `PROJECTS_DIR` at the top:
+
+```zsh
+WIN_USER="YourWindowsUsername"
+CLAUDE_BIN="/mnt/c/Users/${WIN_USER}/AppData/Local/AnthropicClaude/claude.exe"
+PROJECTS_DIR="/mnt/c/Users/${WIN_USER}/AppData/Roaming/Claude/projects"
+```
+
+**To check which applies:** run `ls ~/.claude/projects/` after a Claude session.
+If the directory is empty, sessions are going to the Windows path (Option B).
+
+---
+
 ## Trusting Your Projects Folder
 
 If Claude Code asks **"Do you trust this folder?"** every time you start a session
@@ -291,8 +319,44 @@ alias mybot="env -u MY_TOKEN $HOME/.claude/claude-smart-resume.sh --channels ...
 | Platform | Status |
 |----------|--------|
 | Linux | **Available — v0.1** |
-| macOS | Coming in v0.2 |
-| Windows (WSL) | Coming in v0.2 |
+| Windows (WSL) | **Available — v0.2** |
+| macOS | Coming in v0.3 |
+
+---
+
+## Recommended Setup
+
+### Run inside a tmux session
+
+It is strongly recommended to run Claude Code — and therefore this wrapper — inside
+a **tmux** session. Because Smart Resume sleeps for hours between a rate-limit hit and
+the next resume, the process must stay alive for the full duration. A tmux session is
+decoupled from your terminal emulator: if the terminal window closes, the connection
+drops, or SSH times out, the tmux session continues running on the host and can be
+reattached at any time.
+
+```bash
+tmux new-session -s claude    # start a named session
+claude                        # run as normal — wrapper takes over on RL hit
+# detach with Ctrl-b d; reattach later with: tmux attach -t claude
+```
+
+The countdown and resume happen entirely within the tmux pane. You can detach, close
+your laptop, and come back hours later to find the session already resumed and working.
+
+### Run on an always-on machine
+
+For fully unattended operation, run Claude Code on a machine that stays online
+continuously — a VPS, a home server, or any persistent Linux host. Combined with
+tmux, this means:
+
+- Rate limit hits are handled automatically with no human intervention
+- The resumed session picks up exactly where it left off
+- You are free to close your local machine entirely between rate limit windows
+
+This setup is particularly effective for long-running autonomous tasks where you
+want Claude to work through rate limit cycles overnight or across multiple days
+without requiring you to be present.
 
 ---
 
