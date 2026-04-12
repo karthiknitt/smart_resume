@@ -323,6 +323,42 @@ alias mybot="env -u MY_TOKEN $HOME/.claude/claude-smart-resume.sh --channels ...
 
 ---
 
+## Recommended Setup
+
+### Run inside a tmux session
+
+It is strongly recommended to run Claude Code — and therefore this wrapper — inside
+a **tmux** session. Because Smart Resume sleeps for hours between a rate-limit hit and
+the next resume, the process must stay alive for the full duration. A tmux session is
+decoupled from your terminal emulator: if the terminal window closes, the connection
+drops, or SSH times out, the tmux session continues running on the host and can be
+reattached at any time.
+
+```bash
+tmux new-session -s claude    # start a named session
+claude                        # run as normal — wrapper takes over on RL hit
+# detach with Ctrl-b d; reattach later with: tmux attach -t claude
+```
+
+The countdown and resume happen entirely within the tmux pane. You can detach, close
+your laptop, and come back hours later to find the session already resumed and working.
+
+### Run on an always-on machine
+
+For fully unattended operation, run Claude Code on a machine that stays online
+continuously — a VPS, a home server, or any persistent Linux host. Combined with
+tmux, this means:
+
+- Rate limit hits are handled automatically with no human intervention
+- The resumed session picks up exactly where it left off
+- You are free to close your local machine entirely between rate limit windows
+
+This setup is particularly effective for long-running autonomous tasks where you
+want Claude to work through rate limit cycles overnight or across multiple days
+without requiring you to be present.
+
+---
+
 ## Limitations
 
 - **~2 s detection lag** — watcher polls every 2 s in Phase 2; the RL menu may flash briefly before `SIGINT`. Cosmetic only.
