@@ -306,7 +306,7 @@ alias mybot="env -u MY_TOKEN $HOME/.claude/claude-smart-resume.sh --channels ...
 
 ## Disclaimer
 
-**Smart Resume** is an independent, community-built tool created by
+**Smart Resume** is an independently-built tool created by
 [Karthikeyan N](https://github.com/karthiknitt).
 
 - **Claude Code** is a product of [Anthropic, PBC](https://www.anthropic.com).
@@ -325,6 +325,7 @@ Use of Claude Code itself is subject to [Anthropic's Terms of Service](https://w
 
 ## License
 
-MIT License — Copyright (c) 2026 Karthikeyan N
+MIT License — Copyright (c) 2026 
+Author: Karthikeyan N
 
 See [LICENSE](LICENSE) for the full text.
