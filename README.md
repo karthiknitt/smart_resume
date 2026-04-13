@@ -6,8 +6,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform: Linux](https://img.shields.io/badge/Platform-Linux-blue.svg)](#)
 [![Shell: bash / zsh](https://img.shields.io/badge/Shell-bash%20%2F%20zsh-green.svg)](#)
-[![macOS: Coming v0.3](https://img.shields.io/badge/macOS-Coming%20v0.3-lightgrey.svg)](#platforms)
-[![Windows WSL](https://img.shields.io/badge/Windows%20WSL-v0.2-blue.svg)](#platforms)
+[![macOS](https://img.shields.io/badge/macOS-v0.3-brightgreen.svg)](#platforms)
+[![Windows WSL](https://img.shields.io/badge/Windows%20WSL-v0.3-blue.svg)](#platforms)
 
 > [!IMPORTANT]
 > **Disclaimer:** Claude Code is a product of Anthropic, PBC. "Claude" and "Claude Code"
@@ -252,7 +252,7 @@ the installer handles everything.
 **Option B — Windows Claude Code app called via WSL path interop:**
 
 Sessions are stored in the Windows user profile. After installation, open
-`~/.claude/claude-smart-resume.sh` and update the path variables at the top:
+`~/.claude/claude-smart-resume-wsl.sh` and update the path variables at the top:
 
 ```bash
 WIN_USER="YourWindowsUsername"
@@ -262,6 +262,43 @@ PROJECTS_DIR="/mnt/c/Users/${WIN_USER}/AppData/Roaming/Claude/projects"
 
 **To check which applies:** run `ls ~/.claude/projects/` after a Claude session.
 If the directory is empty, sessions are going to the Windows path (Option B).
+
+---
+
+## macOS Notes
+
+The macOS wrapper (`claude-smart-resume-macos.sh`) is functionally identical to the
+Linux version but uses BSD-compatible tooling throughout:
+
+| Feature | Linux | macOS |
+|---------|-------|-------|
+| Session discovery | `find -printf` (mtime sort) | `ls -t` |
+| Reset time parsing | GNU `date -d` | `python3` (stdlib only) |
+| Epoch formatting | `date -d @<epoch>` | `date -r <epoch>` |
+| Regex extraction | `grep -oP` (PCRE) | `sed -E` (POSIX ERE) |
+| Child PID discovery | `/proc/<pid>/children` | `pgrep -P` |
+
+`python3` is required on macOS (pre-installed on macOS 12.3+; install via Homebrew
+if missing). No third-party Python packages are needed — only the stdlib.
+
+**Setup:**
+
+```bash
+cp src/claude-smart-resume-macos.sh ~/.claude/
+chmod +x ~/.claude/claude-smart-resume-macos.sh
+```
+
+Open the file and verify `CLAUDE_BIN` points to your `claude` binary:
+
+```bash
+which claude   # find your path first
+```
+
+Add to your `~/.zshrc` or `~/.bashrc`:
+
+```bash
+alias claude="$HOME/.claude/claude-smart-resume-macos.sh"
+```
 
 ---
 
@@ -368,11 +405,11 @@ alias mybot="env -u MY_TOKEN $HOME/.claude/claude-smart-resume.sh --channels ...
 
 ## Platforms
 
-| Platform | Status |
-|----------|--------|
-| Linux | **Available — v0.1** |
-| Windows (WSL) | **Available — v0.2** |
-| macOS | Coming in v0.3 |
+| Platform | Status | Script |
+|----------|--------|--------|
+| Linux | **Available — v0.1+** | `claude-smart-resume.sh` |
+| Windows (WSL) | **Available — v0.3** | `claude-smart-resume-wsl.sh` |
+| macOS | **Available — v0.3** | `claude-smart-resume-macos.sh` |
 
 ---
 

@@ -3,9 +3,6 @@
 *.jpg
 *.jpeg
 
-# macOS version (not yet ready for release)
-src/claude-smart-resume-macos.sh
-
 # Claude Code project instructions (machine-local)
 CLAUDE.md
 .claude/
