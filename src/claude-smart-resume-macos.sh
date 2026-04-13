@@ -1,46 +1,28 @@
 #!/usr/bin/env bash
-# ~/.claude/claude-smart-resume-wsl.sh
+# ~/.claude/claude-smart-resume-macos.sh
 #
 # Smart Resume for Claude Code — by Karthikeyan N
 # MIT License
 #
-# WSL (Windows Subsystem for Linux) version of the rate-limit auto-resume wrapper.
-#
-# WSL runs a full Linux kernel, so this is functionally identical to the Linux
-# version. The only WSL-specific considerations are where Claude stores sessions:
-#
-#   Option A — Claude installed natively inside WSL (most common):
-#     Sessions: ~/.claude/projects/   (inside WSL)
-#     Binary:   ~/.local/bin/claude   (or /usr/local/bin/claude)
-#
-#   Option B — Windows Claude Code app called via WSL path interop:
-#     Sessions: /mnt/c/Users/<Name>/AppData/Roaming/Claude/projects/
-#     Binary:   /mnt/c/Users/<Name>/AppData/Local/AnthropicClaude/claude.exe
-#
-# Run `which claude` and `ls ~/.claude/projects/` to confirm which applies.
+# macOS version of the rate-limit auto-resume wrapper.
+# Differences from the Linux version:
+#   - find_latest_session: uses ls -t instead of find -printf (BSD find lacks -printf)
+#   - get_reset_info:      uses sed -E instead of grep -oP (macOS grep lacks -P)
+#   - get_session_name:    uses sed -E instead of grep -oP
+#   - parse_reset_epoch:   uses python3 instead of date -d (BSD date lacks -d)
+#   - epoch_to_human:      uses date -r instead of date -d @ (BSD date syntax)
+#   - _run_claude:         uses sh -c 'echo $PPID' + pgrep (no /proc on macOS)
 #
 # Works with bash 4+ and zsh. No zsh required.
 #
-# Setup (add to ~/.bashrc or ~/.zshrc inside WSL):
-#   alias claude="$HOME/.claude/claude-smart-resume-wsl.sh"
+# Setup (add to ~/.bashrc or ~/.zshrc):
+#   alias claude="$HOME/.claude/claude-smart-resume-macos.sh"
 #
 # The real claude binary is called via its absolute path so the alias
 # doesn't recurse.
 
-# ---------------------------------------------------------------------------
-# CONFIGURE THESE for your WSL setup
-# ---------------------------------------------------------------------------
-
-# Option A — Claude installed natively inside WSL (most common):
-CLAUDE_BIN="${HOME}/.local/bin/claude"
+CLAUDE_BIN="/usr/local/bin/claude"   # adjust: run `which claude` before adding alias
 PROJECTS_DIR="${HOME}/.claude/projects"
-
-# Option B — Windows Claude binary via WSL interop (uncomment if needed):
-# WIN_USER="YourWindowsUsername"
-# CLAUDE_BIN="/mnt/c/Users/${WIN_USER}/AppData/Local/AnthropicClaude/claude.exe"
-# PROJECTS_DIR="/mnt/c/Users/${WIN_USER}/AppData/Roaming/Claude/projects"
-
-# ---------------------------------------------------------------------------
 BUFFER_SECS=60
 
 # ANSI helpers — all write to stderr so they never corrupt --print output
@@ -55,19 +37,28 @@ _white()   { printf '\e[1;97m%s\e[0m' "$*" >&2; }
 _nl()      { printf '\n' >&2; }
 
 # ---------------------------------------------------------------------------
+# BSD-compatible: sort by mtime using ls -t
+# ---------------------------------------------------------------------------
 find_latest_session() {
   local encoded_cwd
   encoded_cwd=$(pwd | sed 's|/|-|g; s|^-||')
   local session_dir="${PROJECTS_DIR}/${encoded_cwd}"
+
   if [[ -d "$session_dir" ]]; then
-    find "$session_dir" -maxdepth 1 -name "*.jsonl" -type f \
-      -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-
+    # shellcheck disable=SC2012  # ls -t needed for mtime sort; BSD find lacks -printf
+    ls -t "$session_dir"/*.jsonl 2>/dev/null | head -1
   else
+    # shellcheck disable=SC2038  # xargs ls -t needed for mtime sort on BSD; session filenames are UUIDs (safe)
     find "$PROJECTS_DIR" -maxdepth 2 -name "*.jsonl" -type f \
-      -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-
+      | xargs ls -t 2>/dev/null | head -1
   fi
 }
 
+# ---------------------------------------------------------------------------
+# sed -E instead of grep -oP (macOS grep lacks PCRE).
+# start_line parameter skips pre-existing lines — prevents re-matching the
+# old "resets …(" entry after a resume (same logic as Linux version).
+# ---------------------------------------------------------------------------
 get_reset_info() {
   local session_file="$1" start_line="${2:-1}"
   local reset_line
@@ -76,19 +67,21 @@ get_reset_info() {
   reset_line=$(tail -n "+${start_line}" "$session_file" 2>/dev/null \
     | grep -i 'resets .*(' | tail -1)
   [[ -z "$reset_line" ]] && return 0
+
   local reset_time reset_tz
-  # Capture everything between "resets " and the opening paren — handles
-  # "7:30pm (tz)", "Apr 26 7:30pm (tz)", "Apr 26, 2026 7:30pm (tz)", etc.
-  reset_time=$(echo "$reset_line" | grep -oP '(?i)resets \K[^(]+' | sed 's/[[:space:]]*$//')
-  reset_tz=$(echo "$reset_line"   | grep -oP '\([^)]+\)' | tr -d '()')
+  reset_time=$(echo "$reset_line" | sed -nE 's/.*[Rr]esets ([^(]+)\(.*/\1/p' | sed 's/[[:space:]]*$//')
+  reset_tz=$(echo "$reset_line"   | sed -nE 's/.*\(([^)]+)\).*/\1/p')
+
   [[ -n "$reset_time" && -n "$reset_tz" ]] && echo "${reset_time} ${reset_tz}" || true
 }
 
-# Use grep -F + grep -oP — never use `strings` on JSONL (can split JSON objects)
+# ---------------------------------------------------------------------------
+# Use grep -F + sed -E (strings can split JSON objects — never use for JSONL)
+# ---------------------------------------------------------------------------
 get_session_name() {
   grep -F '"type":"custom-title"' "$1" 2>/dev/null \
     | tail -1 \
-    | grep -oP '"customTitle":"\K[^"]+' || true
+    | sed -nE 's/.*"customTitle":"([^"]+)".*/\1/p' || true
 }
 
 name_session() {
@@ -105,24 +98,62 @@ generate_name() {
   echo "rl-${date_tag}-${cwd_slug}"
 }
 
+# ---------------------------------------------------------------------------
+# python3 for time parsing (stdlib only — no dateutil needed).
+# BSD date -j can't reliably parse am/pm + timezone in one call.
+# ---------------------------------------------------------------------------
 parse_reset_epoch() {
   local reset_time="$1" reset_tz="$2"
-  local reset_epoch now_epoch
-  # GNU date -d handles "7:30pm", "Apr 26 7:30pm", "Apr 26, 2026 7:30pm", etc.
-  reset_epoch=$(TZ="$reset_tz" date -d "$reset_time" +%s 2>/dev/null) || return 1
-  now_epoch=$(date +%s)
-  # Only apply next-day rollover when the string was time-only (no date).
-  # A full date string ("Apr 26 7:30pm") already resolves to the correct future
-  # epoch — adding 86400 would overshoot by a day.
-  if (( reset_epoch <= now_epoch )); then
-    if [[ "${reset_time,,}" =~ ^[0-9]+:[0-9]+[apm]+$ ]]; then
-      reset_epoch=$(( reset_epoch + 86400 ))   # time-only: push to tomorrow
-    else
-      return 1   # full date already in past — something is wrong, bail out
-    fi
-  fi
-  echo "$reset_epoch"
+  python3 - "$reset_time" "$reset_tz" <<'EOF'
+import sys, re, time, datetime, os
+
+reset_str = sys.argv[1].strip()
+tz        = sys.argv[2]
+
+os.environ['TZ'] = tz
+time.tzset()
+
+now   = datetime.datetime.now()
+epoch = None
+
+formats = [
+    ('%b %d, %Y %I:%M%p', False),   # "Apr 26, 2026 7:30pm"
+    ('%b %d %Y %I:%M%p',  False),   # "Apr 26 2026 7:30pm"
+    ('%b %d, %I:%M%p',    True),    # "Apr 26, 7:30pm"  — no year
+    ('%b %d %I:%M%p',     True),    # "Apr 26 7:30pm"   — no year
+    ('%I:%M%p',           True),    # "7:30pm"          — time-only
+]
+
+reset_clean = re.sub(r'\s+', ' ', reset_str).strip()
+
+for fmt, inject_year in formats:
+    try:
+        s = f"{now.year} {reset_clean}" if inject_year else reset_clean
+        f = f"%Y {fmt}"                 if inject_year else fmt
+        t = datetime.datetime.strptime(s, f)
+        epoch = int(t.timestamp())
+        break
+    except ValueError:
+        continue
+
+if epoch is None:
+    sys.exit(1)
+
+now_epoch = int(time.time())
+if epoch <= now_epoch:
+    if re.match(r'^\d+:\d+[apm]+$', reset_clean, re.IGNORECASE):
+        epoch += 86400   # time-only already passed today → push to tomorrow
+    else:
+        sys.exit(1)      # full date in the past — bail
+
+print(epoch)
+EOF
 }
+
+# ---------------------------------------------------------------------------
+# BSD date uses -r <epoch> instead of GNU date -d @<epoch>
+# ---------------------------------------------------------------------------
+epoch_to_human() { date -r "$1" "$2"; }
 
 # ---------------------------------------------------------------------------
 # Wait until wake_epoch. Prints nothing — the banner already shows the time.
@@ -209,11 +240,10 @@ _rl_watcher() {
 #
 # Design: run claude DIRECTLY IN THE FOREGROUND — it inherits the terminal
 # naturally as a direct child of this shell, with no job control tricks.
-# The watcher starts first (in background) and discovers claude's PID by
-# reading /proc/<script_pid>/children once claude appears as a child.
 #
-# WSL has /proc (Linux kernel), so we use the same /proc-based approach as
-# the Linux version.
+# macOS has no /proc — uses sh -c 'echo $PPID' to get the subshell's own
+# PID (the PPID of the sh child = this subshell), and pgrep -P to list
+# direct children for claude PID discovery.
 # ---------------------------------------------------------------------------
 _run_claude() {
   rm -f "${HOME}/.claude/.rl_warn"   # reset flag — each run starts clean
@@ -224,15 +254,14 @@ _run_claude() {
   (
     exec >/dev/null 2>/dev/null   # belt-and-suspenders: silence all output
 
-    local watcher_self=0 _stat_line
-    read -r _stat_line < /proc/self/stat 2>/dev/null \
-      && watcher_self=${_stat_line%% *}
+    # Get this subshell's own PID: PPID of a child sh = this subshell
+    local watcher_self
+    watcher_self=$(sh -c 'echo $PPID' 2>/dev/null || echo 0)
 
     local claude_pid='' i=0
     while (( i++ < 200 )) && [[ -z "$claude_pid" ]]; do
       local raw=''
-      read -r raw < "/proc/${my_pid}/task/${my_pid}/children" 2>/dev/null \
-        || raw=$(pgrep -d' ' -P "$my_pid" 2>/dev/null) || true
+      raw=$(pgrep -d' ' -P "$my_pid" 2>/dev/null) || true
       for pid in $raw; do
         [[ "$pid" == "$watcher_self" ]] && continue
         claude_pid=$pid; break
@@ -244,6 +273,8 @@ _run_claude() {
   ) > /dev/null 2>/dev/null &
   local watcher_pid=$!
 
+  # 'true' not '' — Node.js resets inherited signal handlers on exec,
+  # so SIGINT still reaches claude; the wrapper catches it and moves on.
   trap 'true' INT
   "$CLAUDE_BIN" "$@"
   trap - INT
@@ -350,9 +381,9 @@ main() {
     printf '  \e[1;33m⚡ Rate limit hit\e[0m\n' >&2
     printf '  \e[2m%s\e[0m\n' "$_bar" >&2
     printf '  \e[2mSession\e[0m  \e[33m"%s"\e[0m\n'  "$session_name" >&2
-    printf '  \e[2mResets \e[0m  \e[32m%s\e[0m\n'    "$(date -d "@${reset_epoch}" '+%H:%M:%S %Z  (%Y-%m-%d)')" >&2
+    printf '  \e[2mResets \e[0m  \e[32m%s\e[0m\n'    "$(epoch_to_human "$reset_epoch" '+%H:%M:%S %Z  (%Y-%m-%d)')" >&2
     printf '  \e[2mWaking \e[0m  \e[32m%s\e[0m  \e[2m(+%ds buffer)\e[0m\n' \
-      "$(date -d "@${wake_epoch}" '+%H:%M:%S %Z')" "$BUFFER_SECS" >&2
+      "$(epoch_to_human "$wake_epoch" '+%H:%M:%S %Z')" "$BUFFER_SECS" >&2
     printf '  \e[2m%s\e[0m\n' "$_bar" >&2
     printf '  \e[2mPress Ctrl-C to cancel\e[0m\n' >&2
     printf '\n' >&2
