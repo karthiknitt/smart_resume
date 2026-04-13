@@ -12,3 +12,9 @@ CLAUDE.md
 
 # Local test/dev scripts
 test-countdown.sh
+
+# Simulation / end-to-end dev tools (not part of the release)
+simulate-rl.sh
+
+# Local porting / dev notes
+fixes.md

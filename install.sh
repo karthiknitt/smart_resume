@@ -53,12 +53,16 @@ _cyan()   { printf '\e[36m%s\e[0m' "$*"; }
 _red()    { printf '\e[31m%s\e[0m' "$*"; }
 _dim()    { printf '\e[2m%s\e[0m' "$*"; }
 
-BAR='──────────────────────────────────────────────────────'
+# BAR width = visual width of header content (no emoji — emoji width is
+# terminal-dependent and breaks alignment):
+#   "  Smart Resume Installer  ·  Karthikeyan N  ·  MIT License  "
+#    2 + 22 + 2 + 1 + 2 + 13 + 2 + 1 + 2 + 11 + 2 = 60
+BAR='────────────────────────────────────────────────────────────'  # 60 chars
 
 header() {
   printf '\n'
   printf "  \e[36m╭%s╮\e[0m\n" "$BAR"
-  printf "  \e[36m│\e[0m  \e[1;97m⚡ Smart Resume Installer\e[0m  \e[2m·\e[0m  \e[97mKarthikeyan N\e[0m  \e[2m·\e[0m  \e[2mMIT License\e[0m  \e[36m│\e[0m\n"
+  printf "  \e[36m│\e[0m  \e[1;97mSmart Resume Installer\e[0m  \e[2m·\e[0m  \e[97mKarthikeyan N\e[0m  \e[2m·\e[0m  \e[2mMIT License\e[0m  \e[36m│\e[0m\n"
   printf "  \e[36m╰%s╯\e[0m\n" "$BAR"
   printf '\n'
 }
@@ -80,9 +84,6 @@ check_dependencies() {
   step "Checking dependencies..."
 
   local missing=()
-
-  # zsh — wrapper scripts use #!/usr/bin/env zsh; won't run without it
-  command -v zsh     &>/dev/null || missing+=("zsh")
 
   # jq — required to auto-patch ~/.claude/settings.json with the statusLine hook
   command -v jq      &>/dev/null || missing+=("jq")
@@ -256,7 +257,15 @@ add_alias() {
   if [[ "${answer,,}" == y* ]]; then
     printf '\n# Smart Resume for Claude Code\n%s\n' "$alias_line" >> "$shell_rc"
     ok "Alias added to $(_bold "$shell_rc")"
-    info "Run: $(_bold "source $shell_rc") to activate now"
+    # Attempt to activate immediately. Works when this installer is sourced
+    # (source ./install.sh); in a subprocess it loads the alias for this
+    # process only — new terminals will pick it up automatically.
+    # shellcheck disable=SC1090
+    if source "$shell_rc" 2>/dev/null; then
+      ok "Alias sourced — active in new terminals and any sourced session"
+    else
+      info "Open a new terminal to activate, or run: $(_bold "source $shell_rc")"
+    fi
   else
     warn "Alias skipped. Add manually when ready:"
     printf '    %s\n' "$alias_line"
@@ -323,10 +332,13 @@ patch_settings_json() {
 # Summary
 # ---------------------------------------------------------------------------
 print_summary() {
+  # Completion box: content is "  ✓ Installation complete!  " = 28 visible chars.
+  # BAR = 54 chars, so right-pad with (54 - 28) = 26 spaces to close the box cleanly.
+  local DONE_BAR='────────────────────────────'   # 28 dashes = width of box content
   printf '\n'
-  printf "  \e[36m╭%s╮\e[0m\n" "$BAR"
-  printf "  \e[36m│\e[0m  \e[1;32m✓ Installation complete!\e[0m\n"
-  printf "  \e[36m╰%s╯\e[0m\n" "$BAR"
+  printf "  \e[36m╭%s╮\e[0m\n" "$DONE_BAR"
+  printf "  \e[36m│\e[0m  \e[1;32m✓ Installation complete!\e[0m  \e[36m│\e[0m\n"
+  printf "  \e[36m╰%s╯\e[0m\n" "$DONE_BAR"
   printf '\n'
   printf '  Files installed:\n'
   printf '    %s\n' "$(_bold "${CLAUDE_DIR}/${WRAPPER_NAME}")"

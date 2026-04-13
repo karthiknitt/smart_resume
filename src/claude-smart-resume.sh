@@ -1,4 +1,4 @@
-#!/usr/bin/env zsh
+#!/usr/bin/env bash
 # ~/.claude/claude-smart-resume.sh
 #
 # Smart Resume for Claude Code — by Karthikeyan N
@@ -8,7 +8,9 @@
 # to a rate limit, it prints the reset time, waits precisely until then,
 # then resumes the same session — all in the foreground of your terminal.
 #
-# Setup (add to ~/.zshrc):
+# Works with bash 4+ and zsh. No zsh required.
+#
+# Setup (add to ~/.bashrc or ~/.zshrc):
 #   alias claude="$HOME/.claude/claude-smart-resume.sh"
 #
 # The real claude binary is called via its absolute path so the alias
@@ -44,11 +46,12 @@ find_latest_session() {
 }
 
 get_reset_info() {
-  local session_file="$1"
+  local session_file="$1" start_line="${2:-1}"
   local reset_line
-  # Match any rate-limit line regardless of error key name — the signal is
-  # the human-readable "resets <time> (<tz>)" pattern, not a specific JSON field.
-  reset_line=$(grep -i 'resets .*(' "$session_file" 2>/dev/null | tail -1)
+  # Only scan lines written after start_line so a post-resume loop never
+  # re-matches the old "resets …(" entry that is still in the JSONL.
+  reset_line=$(tail -n "+${start_line}" "$session_file" 2>/dev/null \
+    | grep -i 'resets .*(' | tail -1)
   [[ -z "$reset_line" ]] && return 0
   local reset_time reset_tz
   # Capture everything between "resets " and the opening paren — handles
@@ -90,7 +93,7 @@ parse_reset_epoch() {
   # A full date string ("Apr 26 7:30pm") already resolves to the correct future
   # epoch — adding 86400 would overshoot by a day.
   if (( reset_epoch <= now_epoch )); then
-    if [[ "${reset_time:l}" =~ ^[0-9]+:[0-9]+[apm]+$ ]]; then
+    if [[ "${reset_time,,}" =~ ^[0-9]+:[0-9]+[apm]+$ ]]; then
       reset_epoch=$(( reset_epoch + 86400 ))   # time-only: push to tomorrow
     else
       return 1   # full date already in past — something is wrong, bail out
@@ -106,7 +109,10 @@ parse_reset_epoch() {
 show_countdown() {
   local wake_epoch="$1" session_name="$2" session_id="$3"
 
+  tput civis 2>/dev/null >&2   # hide cursor during countdown
+
   trap '
+    tput cnorm 2>/dev/null >&2
     printf "\r\e[K  \e[33mCancelled.\e[0m Resume manually:\n" >&2
     printf "  claude --resume %s\n\n" "'"$session_id"'" >&2
     exit 0
@@ -118,67 +124,60 @@ show_countdown() {
     (( remaining <= 0 )) && break
     mins=$(( remaining / 60 ))
     secs=$(( remaining % 60 ))
-    printf '\r  \e[2mWaiting \e[0m  \e[33m%d min %02ds\e[0m remaining \e[2m(%ds)\e[0m\e[K' \
-      "$mins" "$secs" "$remaining" >&2
+    # \r goes to col 0 and overwrites the line in place — universally supported.
+    # \e[K clears any leftover chars from a previously longer line.
+    printf '\r  \e[2mWaiting until reset.\e[0m  Remaining: \e[33m%d min %02ds\e[0m\e[K' \
+      "$mins" "$secs" >&2
     sleep 1
   done
-  printf '\r\e[K' >&2  # clear countdown line before resume banner
+  printf '\r\e[K' >&2   # clear countdown line before resume banner
 
+  tput cnorm 2>/dev/null >&2
   trap - INT
 }
 
 # ---------------------------------------------------------------------------
-# RL watcher: two-phase design to avoid wasteful JSONL polling.
+# RL watcher: polls the session JSONL for a "resets …(" entry and sends
+# SIGINT to claude the moment one appears — bypassing the interactive
+# rate-limit menu automatically.
 #
-# Phase 1 — cheap: sleeps 5 s between checks of a tiny flag file written by
-#   statusline.sh when either rate-limit indicator reaches 90% (display turns
-#   red at 80% but the watcher only needs to start when a hit is imminent).
-#   Cost: one stat() call every 5 s — effectively zero.
+# Previously used a two-phase design that required statusline.sh to write a
+# flag file before JSONL polling began. That meant auto-detection only worked
+# when statusline.sh was configured as a hook; without it the watcher sat idle
+# and the user had to manually Ctrl-C out of claude's rate-limit menu.
 #
-# Phase 2 — active: once the flag appears, finds the session JSONL, snapshots
-#   the current line count as a baseline (ignores all pre-existing lines,
-#   including old RL entries from previous --resume runs), then polls every 2 s
-#   for new lines containing the "resets …(" pattern. On detection, sends SIGINT
-#   to bypass Claude's interactive rate-limit menu.
-#
-# Requires statusline.sh to be configured as a hook. Without it the flag never
-# appears, Phase 1 loops forever at negligible cost, and the RL menu shows as
-# normal (graceful degradation — no crash, no spurious SIGINT).
+# Now Phase 1 is removed: JSONL polling starts immediately after the session
+# file appears. Cost: wc -l + optional tail|grep every 5 s — negligible.
+# statusline.sh is still useful for the statusline display but is no longer
+# required for auto-detection to function.
 # ---------------------------------------------------------------------------
 _rl_watcher() {
   local claude_pid=$1
-  local rl_warn_flag="${HOME}/.claude/.rl_warn"
 
-  # Phase 1: wait for the statusline hook to signal RL >= 90%
-  while kill -0 "$claude_pid" 2>/dev/null; do
-    [[ -f "$rl_warn_flag" ]] && break
-    sleep 5
-  done
-  kill -0 "$claude_pid" 2>/dev/null || return   # claude already gone
-
-  # Phase 2: RL is red — find the session file and start JSONL polling
+  # Wait up to 30 s for the session file to be created by claude.
   local session_file='' i=0
-  while (( i++ < 15 )) && [[ -z "$session_file" ]]; do
+  while (( i++ < 30 )) && [[ -z "$session_file" ]]; do
     sleep 1
     session_file=$(find_latest_session)
   done
   [[ -z "$session_file" ]] && return
 
-  # Baseline: only watch lines appended after RL turned red
+  # Baseline: snapshot line count so we only watch NEW lines.
   local baseline
-  baseline=$(wc -l < "$session_file" 2>/dev/null || echo 0)
+  baseline=$(wc -l < "$session_file" 2>/dev/null | tr -d ' ' || echo 0)
 
   while kill -0 "$claude_pid" 2>/dev/null; do
-    sleep 2
+    sleep 5
     local current
-    current=$(wc -l < "$session_file" 2>/dev/null || echo 0)
-    (( current <= baseline )) && continue
-
-    if tail -n "+$(( baseline + 1 ))" "$session_file" 2>/dev/null \
-        | grep -qi 'resets .*('; then
-      sleep 0.3   # let claude finish writing the entry
-      kill -INT "$claude_pid" 2>/dev/null
-      return
+    current=$(wc -l < "$session_file" 2>/dev/null | tr -d ' ' || echo 0)
+    if (( current > baseline )); then
+      if tail -n "+$(( baseline + 1 ))" "$session_file" 2>/dev/null \
+          | grep -qi 'resets .*('; then
+        sleep 0.3   # let claude finish writing the entry
+        kill -INT "$claude_pid" 2>/dev/null
+        return
+      fi
+      baseline=$current   # advance baseline to avoid re-scanning same lines
     fi
   done
 }
@@ -202,8 +201,10 @@ _run_claude() {
   local my_pid=$$
 
   # Start the watcher before claude. It waits for claude to appear as a child
-  # of this shell, then hands off to the standard two-phase RL monitor.
+  # of this shell, then starts JSONL polling for a rate-limit entry.
   (
+    exec >/dev/null 2>/dev/null   # belt-and-suspenders: silence all output
+
     local watcher_self=0 _stat_line
     read -r _stat_line < /proc/self/stat 2>/dev/null \
       && watcher_self=${_stat_line%% *}
@@ -213,7 +214,7 @@ _run_claude() {
       local raw=''
       read -r raw < "/proc/${my_pid}/task/${my_pid}/children" 2>/dev/null \
         || raw=$(pgrep -d' ' -P "$my_pid" 2>/dev/null) || true
-      for pid in ${=raw}; do
+      for pid in $raw; do
         [[ "$pid" == "$watcher_self" ]] && continue
         claude_pid=$pid; break
       done
@@ -233,88 +234,120 @@ _run_claude() {
 }
 
 # ---------------------------------------------------------------------------
-# Main loop: run claude, detect RL on exit, wait, resume
+# Main loop: run claude, detect RL on exit, wait, resume.
+#
+# Wrapped in main() so that `local` declarations are properly scoped.
+# In zsh at script top-level, bare `local varname` (typeset without assignment)
+# echoes the current value on every subsequent loop iteration. Wrapping in a
+# function prevents that spurious output and works correctly in both bash and zsh.
 # ---------------------------------------------------------------------------
-resume_id=""     # empty = first run, non-empty = resume run
-resume_msg="Rate limits have reset — continuing where we left off."
+main() {
+  local resume_id=""   # empty = first run, non-empty = resume run
+  local resume_msg="Rate limits have reset — continuing where we left off."
+  # Header bar: must equal visual width of the fixed header content (66 cols).
+  #   "  Smart Resume for Claude Code  ·  Karthikeyan N  ·  MIT License  "
+  #    2 + 28 + 2 + 1 + 2 + 13 + 2 + 1 + 2 + 11 + 2 = 66
+  local _bar='──────────────────────────────────────────────────────────────────'  # 66 chars
 
-while true; do
-  if [[ -z "$resume_id" ]]; then
-    _run_claude "$@"
-  else
-    _run_claude --resume "$resume_id" "$resume_msg"
-  fi
-
-  local session_file
-  session_file=$(find_latest_session)
-  [[ -z "$session_file" || ! -f "$session_file" ]] && break
-
-  # Determine reset epoch — fast path via flag file, fallback via JSONL grep
-  local reset_epoch=""
-  local rl_warn_flag="${HOME}/.claude/.rl_warn"
-
-  if [[ -f "$rl_warn_flag" ]]; then
-    local rl_5h_pct rl_5h_reset rl_7d_pct rl_7d_reset
-    rl_5h_pct=$(grep   '^5h_pct='   "$rl_warn_flag" | cut -d= -f2)
-    rl_5h_reset=$(grep '^5h_reset=' "$rl_warn_flag" | cut -d= -f2)
-    rl_7d_pct=$(grep   '^7d_pct='   "$rl_warn_flag" | cut -d= -f2)
-    rl_7d_reset=$(grep '^7d_reset=' "$rl_warn_flag" | cut -d= -f2)
-    if (( ${rl_5h_pct:-0} >= ${rl_7d_pct:-0} )); then
-      reset_epoch=${rl_5h_reset:-0}
-    else
-      reset_epoch=${rl_7d_reset:-0}
+  while true; do
+    # Snapshot the session file's current line count before this run starts.
+    # Passed to get_reset_info so only NEW lines are scanned — prevents the
+    # post-resume loop where the old "resets …(" entry re-triggers a wait.
+    local pre_run_lines=0 pre_run_file=''
+    pre_run_file=$(find_latest_session)
+    if [[ -n "$pre_run_file" && -f "$pre_run_file" ]]; then
+      pre_run_lines=$(wc -l < "$pre_run_file" 2>/dev/null | tr -d ' ' || echo 0)
     fi
-    (( reset_epoch <= 0 )) && reset_epoch=""
-  fi
 
-  if [[ -z "$reset_epoch" ]]; then
-    local reset_info
-    reset_info=$(get_reset_info "$session_file")
-    [[ -z "$reset_info" ]] && break
+    if [[ -z "$resume_id" ]]; then
+      _run_claude "$@"
+    else
+      _run_claude --resume "$resume_id" "$resume_msg"
+    fi
 
-    local reset_time reset_tz
-    reset_time=$(echo "$reset_info" | awk '{print $1}')
-    reset_tz=$(echo "$reset_info"   | awk '{print $2}')
-    reset_epoch=$(parse_reset_epoch "$reset_time" "$reset_tz") || break
-  fi
+    local session_file=''
+    session_file=$(find_latest_session)
+    [[ -z "$session_file" || ! -f "$session_file" ]] && break
 
-  local wake_epoch=$(( reset_epoch + BUFFER_SECS ))
+    # start_line: 1-based line to begin scanning from (skip pre-existing lines
+    # in the same file; if a new file was created, start from line 1).
+    local start_line=1
+    [[ "$session_file" == "$pre_run_file" ]] && start_line=$(( pre_run_lines + 1 ))
 
-  local session_id
-  session_id=$(basename "$session_file" .jsonl)
+    # Determine reset epoch — fast path via flag file, fallback via JSONL grep
+    local reset_epoch=''
+    local rl_warn_flag="${HOME}/.claude/.rl_warn"
 
-  local session_name
-  session_name=$(get_session_name "$session_file")
-  if [[ -z "$session_name" ]]; then
-    session_name=$(generate_name)
-    name_session "$session_file" "$session_id" "$session_name"
-  fi
+    if [[ -f "$rl_warn_flag" ]]; then
+      local rl_5h_pct='' rl_5h_reset='' rl_7d_pct='' rl_7d_reset=''
+      rl_5h_pct=$(grep   '^5h_pct='   "$rl_warn_flag" | cut -d= -f2)
+      rl_5h_reset=$(grep '^5h_reset=' "$rl_warn_flag" | cut -d= -f2)
+      rl_7d_pct=$(grep   '^7d_pct='   "$rl_warn_flag" | cut -d= -f2)
+      rl_7d_reset=$(grep '^7d_reset=' "$rl_warn_flag" | cut -d= -f2)
+      if (( ${rl_5h_pct:-0} >= ${rl_7d_pct:-0} )); then
+        reset_epoch=${rl_5h_reset:-0}
+      else
+        reset_epoch=${rl_7d_reset:-0}
+      fi
+      (( reset_epoch <= 0 )) && reset_epoch=''
+    fi
 
-  local sleep_secs=$(( wake_epoch - $(date +%s) ))
+    if [[ -z "$reset_epoch" ]]; then
+      local reset_info=''
+      reset_info=$(get_reset_info "$session_file" "$start_line")
+      [[ -z "$reset_info" ]] && break
 
-  local _bar='──────────────────────────────────────────────────────'
-  printf '\n' >&2
-  printf '  \e[36m╭%s╮\e[0m\n' "$_bar" >&2
-  printf '  \e[36m│\e[0m  \e[1;97m⚡ Smart Resume\e[0m  \e[2m·\e[0m  \e[97mKarthikeyan N\e[0m  \e[2m·\e[0m  \e[2mMIT License\e[0m  \e[36m│\e[0m\n' >&2
-  printf '  \e[36m╰%s╯\e[0m\n' "$_bar" >&2
-  printf '\n' >&2
-  printf '  \e[1;33m⚡ Rate limit hit\e[0m\n' >&2
-  printf '  \e[2m%s\e[0m\n' "$_bar" >&2
-  printf '  \e[2mSession\e[0m  \e[33m"%s"\e[0m\n'  "$session_name" >&2
-  printf '  \e[2mResets \e[0m  \e[32m%s\e[0m\n'    "$(date -d "@${reset_epoch}" '+%H:%M:%S %Z  (%Y-%m-%d)')" >&2
-  printf '  \e[2mWaking \e[0m  \e[32m%s\e[0m  \e[2m(+%ds buffer)\e[0m\n' \
-    "$(date -d "@${wake_epoch}" '+%H:%M:%S %Z')" "$BUFFER_SECS" >&2
-  printf '  \e[2m%s\e[0m\n' "$_bar" >&2
-  printf '  \e[2mPress Ctrl-C to cancel\e[0m\n' >&2
-  printf '\n' >&2
+      local reset_time='' reset_tz=''
+      reset_time=$(echo "$reset_info" | awk '{print $1}')
+      reset_tz=$(echo "$reset_info"   | awk '{print $2}')
+      reset_epoch=$(parse_reset_epoch "$reset_time" "$reset_tz") || break
+    fi
 
-  show_countdown "$wake_epoch" "$session_name" "$session_id"
+    local wake_epoch=$(( reset_epoch + BUFFER_SECS ))
 
-  printf '\n' >&2
-  printf '  \e[36m╭%s╮\e[0m\n' "$_bar" >&2
-  printf '  \e[36m│\e[0m  \e[1;32m✓ Resuming\e[0m  \e[33m"%s"\e[0m\n' "$session_name" >&2
-  printf '  \e[36m╰%s╯\e[0m\n' "$_bar" >&2
-  printf '\n' >&2
+    local session_id=''
+    session_id=$(basename "$session_file" .jsonl)
 
-  resume_id="$session_id"
-done
+    local session_name=''
+    session_name=$(get_session_name "$session_file")
+    if [[ -z "$session_name" ]]; then
+      session_name=$(generate_name)
+      name_session "$session_file" "$session_id" "$session_name"
+    fi
+
+    # Resuming box bar: dynamic width so │ always aligns regardless of session
+    # name length.  Content: "  ✓ Resuming  "<name>"  " = 18 + len(name) cols.
+    #   2(indent) + 1(✓) + 9( Resuming) + 2(  ) + 1(") + name + 1(") + 2(  ) = 18+len
+    # Use printf '─%.0s' to repeat the multi-byte ─ character; tr is byte-only
+    # and corrupts it.
+    local _rbar=''
+    _rbar=$(printf '─%.0s' $(seq 1 $(( 18 + ${#session_name} ))))
+
+    printf '\n' >&2
+    printf '  \e[36m╭%s╮\e[0m\n' "$_bar" >&2
+    printf '  \e[36m│\e[0m  \e[1;97mSmart Resume for Claude Code\e[0m  \e[2m·\e[0m  \e[97mKarthikeyan N\e[0m  \e[2m·\e[0m  \e[2mMIT License\e[0m  \e[36m│\e[0m\n' >&2
+    printf '  \e[36m╰%s╯\e[0m\n' "$_bar" >&2
+    printf '\n' >&2
+    printf '  \e[1;33m⚡ Rate limit hit\e[0m\n' >&2
+    printf '  \e[2m%s\e[0m\n' "$_bar" >&2
+    printf '  \e[2mSession\e[0m  \e[33m"%s"\e[0m\n'  "$session_name" >&2
+    printf '  \e[2mResets \e[0m  \e[32m%s\e[0m\n'    "$(date -d "@${reset_epoch}" '+%H:%M:%S %Z  (%Y-%m-%d)')" >&2
+    printf '  \e[2mWaking \e[0m  \e[32m%s\e[0m  \e[2m(+%ds buffer)\e[0m\n' \
+      "$(date -d "@${wake_epoch}" '+%H:%M:%S %Z')" "$BUFFER_SECS" >&2
+    printf '  \e[2m%s\e[0m\n' "$_bar" >&2
+    printf '  \e[2mPress Ctrl-C to cancel\e[0m\n' >&2
+    printf '\n' >&2
+
+    show_countdown "$wake_epoch" "$session_name" "$session_id"
+
+    printf '\n' >&2
+    printf '  \e[36m╭%s╮\e[0m\n' "$_rbar" >&2
+    printf '  \e[36m│\e[0m  \e[1;32m✓ Resuming\e[0m  \e[33m"%s"\e[0m  \e[36m│\e[0m\n' "$session_name" >&2
+    printf '  \e[36m╰%s╯\e[0m\n' "$_rbar" >&2
+    printf '\n' >&2
+
+    resume_id="$session_id"
+  done
+}
+
+main "$@"
