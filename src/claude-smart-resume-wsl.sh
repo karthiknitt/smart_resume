@@ -115,42 +115,31 @@ parse_reset_epoch() {
 }
 
 # ---------------------------------------------------------------------------
-# Live countdown — updates a single line every second (no scrolling)
+# Live countdown — updates a single line every second (no scrolling).
+# Locals declared outside the loop — avoids zsh re-scoping on each iteration
+# which can zero `now` and produce a bogus remaining = wake_epoch (~1.7B).
 # ---------------------------------------------------------------------------
 show_countdown() {
   local wake_epoch="$1" session_name="$2" session_id="$3"
-  local resume_at
-  resume_at=$(date -d "@${wake_epoch}" '+%H:%M %Z')
 
   trap '
-    printf "\r\e[2K" >&2
-    printf "\n  \e[33mCancelled.\e[0m Resume manually when limits clear:\n" >&2
-    printf "    claude --resume %s\n\n" "'"$session_id"'" >&2
+    printf "\r\e[K  \e[33mCancelled.\e[0m Resume manually:\n" >&2
+    printf "  claude --resume %s\n\n" "'"$session_id"'" >&2
     exit 0
   ' INT
 
+  local remaining mins secs
   while true; do
-    local now remaining hrs mins secs
-    now=$(date +%s)
-    remaining=$(( wake_epoch - now ))
+    remaining=$(( wake_epoch - $(date +%s) ))
     (( remaining <= 0 )) && break
-
-    hrs=$(( remaining / 3600 ))
-    mins=$(( (remaining % 3600) / 60 ))
+    mins=$(( remaining / 60 ))
     secs=$(( remaining % 60 ))
-
-    if (( hrs > 0 )); then
-      printf '\r\e[2K  \e[33m↻ %d:%02d:%02d remaining — resuming "%s" at %s\e[0m' \
-        "$hrs" "$mins" "$secs" "$session_name" "$resume_at" >&2
-    else
-      printf '\r\e[2K  \e[33m↻ %d:%02d remaining — resuming "%s" at %s\e[0m' \
-        "$mins" "$secs" "$session_name" "$resume_at" >&2
-    fi
-
+    printf '\r  \e[2mWaiting \e[0m  \e[33m%d min %02ds\e[0m remaining \e[2m(%ds)\e[0m\e[K' \
+      "$mins" "$secs" "$remaining" >&2
     sleep 1
   done
+  printf '\r\e[K' >&2
 
-  printf '\r\e[2K' >&2
   trap - INT
 }
 
@@ -313,7 +302,6 @@ while true; do
   printf '  \e[2mResets \e[0m  \e[32m%s\e[0m\n'    "$(date -d "@${reset_epoch}" '+%H:%M:%S %Z  (%Y-%m-%d)')" >&2
   printf '  \e[2mWaking \e[0m  \e[32m%s\e[0m  \e[2m(+%ds buffer)\e[0m\n' \
     "$(date -d "@${wake_epoch}" '+%H:%M:%S %Z')" "$BUFFER_SECS" >&2
-  printf '  \e[2mWait   \e[0m  \e[33m%ds  (%d min)\e[0m\n' "$sleep_secs" "$(( sleep_secs / 60 ))" >&2
   printf '  \e[2m%s\e[0m\n' "$_bar" >&2
   printf '  \e[2mPress Ctrl-C to cancel\e[0m\n' >&2
   printf '\n' >&2

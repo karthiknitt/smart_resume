@@ -70,6 +70,63 @@ err()     { printf "  $(_red '✗') %s\n" "$*"; }
 info()    { printf "  $(_dim '·') %s\n" "$*"; }
 
 # ---------------------------------------------------------------------------
+# Step 0 — Check dependencies
+#
+# Never runs sudo. If anything is missing, prints the exact install command
+# the user should run (with sudo where required) and exits cleanly.
+# The user installs the deps, then re-runs ./install.sh.
+# ---------------------------------------------------------------------------
+check_dependencies() {
+  step "Checking dependencies..."
+
+  local missing=()
+
+  # zsh — wrapper scripts use #!/usr/bin/env zsh; won't run without it
+  command -v zsh     &>/dev/null || missing+=("zsh")
+
+  # jq — required to auto-patch ~/.claude/settings.json with the statusLine hook
+  command -v jq      &>/dev/null || missing+=("jq")
+
+  # python3 — macOS only: parse_reset_epoch uses stdlib datetime (BSD date lacks -d)
+  if [[ "$PLATFORM" == "macos" ]]; then
+    command -v python3 &>/dev/null || missing+=("python3")
+  fi
+
+  if [[ ${#missing[@]} -eq 0 ]]; then
+    ok "All dependencies present."
+    return 0
+  fi
+
+  err "Missing: ${missing[*]}"
+  printf '\n'
+
+  # Build the install command for the detected package manager.
+  # brew does not require sudo; all others do — we print but never run the command.
+  local install_cmd=""
+  if   command -v apt-get &>/dev/null; then
+    install_cmd="sudo apt-get install -y ${missing[*]}"
+  elif command -v dnf     &>/dev/null; then
+    install_cmd="sudo dnf install -y ${missing[*]}"
+  elif command -v pacman  &>/dev/null; then
+    install_cmd="sudo pacman -S --noconfirm ${missing[*]}"
+  elif command -v brew    &>/dev/null; then
+    install_cmd="brew install ${missing[*]}"
+  fi
+
+  if [[ -n "$install_cmd" ]]; then
+    printf '  Install the missing packages with:\n\n'
+    printf '    \e[1m%s\e[0m\n\n' "$install_cmd"
+  else
+    printf '  No supported package manager detected.\n'
+    printf '  Install these packages manually: \e[1m%s\e[0m\n\n' "${missing[*]}"
+  fi
+
+  printf '  Then re-run this installer:\n\n'
+  printf '    \e[1m./install.sh\e[0m\n\n'
+  exit 1
+}
+
+# ---------------------------------------------------------------------------
 # Step 1 — Detect CLAUDE_BIN
 # ---------------------------------------------------------------------------
 detect_claude_bin() {
@@ -152,31 +209,43 @@ patch_statusline_path() {
 add_alias() {
   step "Configuring shell alias..."
 
-  # Detect the user's preferred shell config file
+  # Detect the user's login shell and pick the right RC file
+  local active_shell
+  active_shell=$(basename "${SHELL:-}")
+
   local shell_rc=""
-  if [[ "${SHELL}" == */zsh ]]; then
-    shell_rc="${HOME}/.zshrc"
-  elif [[ "${SHELL}" == */bash ]]; then
-    shell_rc="${HOME}/.bashrc"
-  fi
+  case "$active_shell" in
+    zsh)
+      shell_rc="${HOME}/.zshrc"
+      ;;
+    bash)
+      # macOS bash uses .bash_profile; Linux/WSL uses .bashrc
+      if [[ -f "${HOME}/.bash_profile" && "$(uname -s)" == "Darwin" ]]; then
+        shell_rc="${HOME}/.bash_profile"
+      else
+        shell_rc="${HOME}/.bashrc"
+      fi
+      ;;
+    *)
+      warn "Shell '$(_bold "$active_shell")' not recognised. Add the alias manually:"
+      printf '\n'
+      printf '    alias claude="%s/.claude/%s"\n\n' "$HOME" "$WRAPPER_NAME"
+      return
+      ;;
+  esac
+
+  info "Detected shell: $(_bold "$active_shell") → $(_bold "$shell_rc")"
 
   local alias_line="alias claude=\"\$HOME/.claude/${WRAPPER_NAME}\""
 
-  if [[ -z "$shell_rc" ]]; then
-    warn "Could not detect shell (SHELL=${SHELL:-unset}). Add the alias manually:"
-    printf '\n'
-    printf '    %s\n\n' "$alias_line"
-    return
-  fi
-
   # Idempotency: skip if already present
   if grep -qF "${CLAUDE_DIR}/${WRAPPER_NAME}" "$shell_rc" 2>/dev/null; then
-    ok "Alias already present in $(_bold "$shell_rc") — skipping."
+    ok "Alias already in $(_bold "$shell_rc") — skipping."
     return
   fi
 
   printf '\n'
-  printf "  Add this alias to $(_bold "$shell_rc")?\n"
+  printf '  Add this alias to %s?\n' "$(_bold "$shell_rc")"
   printf '    %s\n' "$(_dim "$alias_line")"
   printf '\n'
   printf '  [Y/n] '
@@ -186,10 +255,10 @@ add_alias() {
 
   if [[ "${answer,,}" == y* ]]; then
     printf '\n# Smart Resume for Claude Code\n%s\n' "$alias_line" >> "$shell_rc"
-    ok "Alias added to $shell_rc"
+    ok "Alias added to $(_bold "$shell_rc")"
     info "Run: $(_bold "source $shell_rc") to activate now"
   else
-    warn "Alias skipped. Add it manually when ready:"
+    warn "Alias skipped. Add manually when ready:"
     printf '    %s\n' "$alias_line"
   fi
 }
@@ -279,6 +348,7 @@ print_summary() {
 # ---------------------------------------------------------------------------
 main() {
   header
+  check_dependencies
   detect_claude_bin
   copy_scripts
   patch_claude_bin

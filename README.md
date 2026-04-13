@@ -30,12 +30,14 @@ window — no manual intervention, no lost context.
   Session  "rl-2026-04-12-projects-myapp"
   Resets   00:30:00 IST  (2026-04-13)
   Waking   00:31:00 IST  (+60s buffer)
-  Wait     17280s  (288 min)
   ──────────────────────────────────────────────────────
   Press Ctrl-C to cancel
 
-  ↻ 4:47:23 remaining — resuming "rl-2026-04-12-projects-myapp" at 00:31 IST
-  Resuming "rl-2026-04-12-projects-myapp" ...
+  Waiting  4 min 23s remaining (263s)
+
+  ╭──────────────────────────────────────────────────────╮
+  │  ✓ Resuming  "rl-2026-04-12-projects-myapp"
+  ╰──────────────────────────────────────────────────────╯
 ```
 
 ---
@@ -85,6 +87,52 @@ no timestamp parsing ever happens in the critical path.
 
 ---
 
+## Dependencies
+
+The installer checks for all required packages before proceeding. If anything is
+missing it prints the exact install command and exits — install the deps, then
+re-run `./install.sh`.
+
+### All platforms
+
+| Package | Purpose | Required |
+|---------|---------|:--------:|
+| `zsh` | Runs the wrapper scripts (`#!/usr/bin/env zsh`) | ✅ |
+| `jq` | Auto-patches `~/.claude/settings.json` with the statusLine hook | ✅ |
+
+### macOS only
+
+| Package | Purpose | Required |
+|---------|---------|:--------:|
+| `python3` | Parses timezone-aware reset times (BSD `date` lacks `-d`) | ✅ |
+
+### Linux / WSL (typically pre-installed)
+
+| Package | Purpose |
+|---------|---------|
+| `awk`, `sed` | JSONL parsing and path encoding |
+| `grep` (with `-oP`) | Perl-regex reset-time extraction |
+| `pgrep` | Process-discovery fallback |
+| GNU `date` | Epoch arithmetic (`date -d`) |
+
+**Install commands by platform** (if you need them):
+
+```bash
+# Debian / Ubuntu / WSL
+sudo apt-get install -y zsh jq
+
+# Fedora / RHEL
+sudo dnf install -y zsh jq
+
+# Arch
+sudo pacman -S --noconfirm zsh jq
+
+# macOS (Homebrew)
+brew install jq python3   # zsh ships with macOS 10.15+
+```
+
+---
+
 ## Installation
 
 ### Quick Install (recommended)
@@ -96,12 +144,13 @@ cd smart_resume
 ```
 
 The installer will:
-1. Detect your `claude` binary path automatically
-2. Copy `claude-smart-resume.sh` and `statusline.sh` to `~/.claude/`
-3. Patch the wrapper with your detected binary path
-4. Offer to add the alias to your `~/.zshrc` or `~/.bashrc`
-5. Offer to register the `statusLine` hook in `~/.claude/settings.json`
-6. Print a summary of everything done
+1. Check all required dependencies — prints the install command and exits if anything is missing
+2. Detect your `claude` binary path automatically
+3. Copy `claude-smart-resume.sh` and `statusline.sh` to `~/.claude/`
+4. Patch the wrapper with your detected binary path
+5. Offer to add the alias to your `~/.zshrc` or `~/.bashrc`
+6. Register the `statusLine` hook in `~/.claude/settings.json`
+7. Print a summary of everything done
 
 Running the installer twice is safe — it is fully **idempotent**.
 
