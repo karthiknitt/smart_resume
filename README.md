@@ -1,11 +1,11 @@
 # Smart Resume For Claude Code
 
-**Author: Karthikeyan N 
+**Author: Karthikeyan N
  License: MIT License**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform: Linux](https://img.shields.io/badge/Platform-Linux-blue.svg)](#)
-[![Shell: zsh](https://img.shields.io/badge/Shell-zsh-green.svg)](#)
+[![Shell: bash / zsh](https://img.shields.io/badge/Shell-bash%20%2F%20zsh-green.svg)](#)
 [![macOS: Coming v0.3](https://img.shields.io/badge/macOS-Coming%20v0.3-lightgrey.svg)](#platforms)
 [![Windows WSL](https://img.shields.io/badge/Windows%20WSL-v0.2-blue.svg)](#platforms)
 
@@ -21,23 +21,23 @@ automatically wait until the limit clears and resume your session in the same te
 window — no manual intervention, no lost context.
 
 ```
-  ╭──────────────────────────────────────────────────────╮
-  │  ⚡ Smart Resume  ·  Karthikeyan N  ·  MIT License   │
-  ╰──────────────────────────────────────────────────────╯
+  ╭────────────────────────────────────────────────────────────╮
+  │  Smart Resume for Claude Code  ·  Karthikeyan N  ·  MIT License  │
+  ╰────────────────────────────────────────────────────────────╯
 
   ⚡ Rate limit hit
-  ──────────────────────────────────────────────────────
+  ──────────────────────────────────────────────────────────────────
   Session  "rl-2026-04-12-projects-myapp"
   Resets   00:30:00 IST  (2026-04-13)
   Waking   00:31:00 IST  (+60s buffer)
-  ──────────────────────────────────────────────────────
+  ──────────────────────────────────────────────────────────────────
   Press Ctrl-C to cancel
 
-  Waiting  4 min 23s remaining (263s)
+    Waiting until reset.  Remaining: 4 min 23s
 
-  ╭──────────────────────────────────────────────────────╮
-  │  ✓ Resuming  "rl-2026-04-12-projects-myapp"
-  ╰──────────────────────────────────────────────────────╯
+  ╭──────────────────────────────────────────────╮
+  │  ✓ Resuming  "rl-2026-04-12-projects-myapp"  │
+  ╰──────────────────────────────────────────────╯
 ```
 
 ---
@@ -46,7 +46,7 @@ window — no manual intervention, no lost context.
 
 - **Detects rate limits automatically** — no menu interaction required
 - **Waits precisely** until the reset time, then resumes in the same terminal
-- **Live countdown** ticks every second in place — no scrolling output
+- **Live countdown** ticks every second in place — single updating line, no scroll
 - **Auto-names sessions** so they're easy to find in `/resume`
 - **Chains** — if the resumed session also hits a limit, the whole process repeats
 
@@ -65,25 +65,26 @@ epochs — no text parsing needed in the hot path.
 
 ### 2. `claude-smart-resume.sh` — the watcher + scheduler
 
-A shell wrapper around the real `claude` binary. It runs two phases in parallel:
+A shell wrapper around the real `claude` binary. It runs two tasks in parallel:
 
-- **Phase 1 (idle):** Checks for the `~/.claude/.rl_warn` flag every 5 seconds.
-  Cost: one `stat()` call per 5 s.
-- **Phase 2 (active, starts at 90%):** Once the flag appears, polls the session
-  JSONL every 2 s. The moment it detects a rate-limit line, it sends `SIGINT` to
-  Claude — bypassing the interactive exit menu. Claude exits cleanly.
+- **Runs claude in the foreground** — the process inherits your terminal directly,
+  so interactive features, colours, and input all work normally.
+- **Polls the session JSONL in the background** — once the session file appears,
+  checks every 5 s for a rate-limit line. The moment one is detected, it sends
+  `SIGINT` to Claude — bypassing the interactive exit menu. Claude exits cleanly.
 
-After Claude exits, the wrapper reads the reset epoch from the flag file and sleeps
-precisely until then. It then resumes via `claude --resume <session-uuid>`.
+After Claude exits, the wrapper reads the reset epoch (from the `~/.claude/.rl_warn`
+flag file if available, or by parsing the JSONL as fallback) and sleeps precisely
+until then. It then resumes via `claude --resume <session-uuid>`.
+
+> **Note:** `statusline.sh` is not required for auto-detection. JSONL polling starts
+> immediately after the session file appears. The flag file is used only as a faster,
+> already-parsed source of the reset epoch — it skips the JSONL grep entirely.
 
 ### 3. The flag file — `~/.claude/.rl_warn`
 
 The shared signal between sensor and watcher. Contains pre-computed reset epochs so
 no timestamp parsing ever happens in the critical path.
-
-> **Graceful degradation:** If `statusline.sh` is not configured, the watcher stays
-> in Phase 1 indefinitely (negligible cost) and falls back to parsing the JSONL for
-> reset times. The tool still works — you just lose the optimised early-detection path.
 
 ---
 
@@ -97,8 +98,10 @@ re-run `./install.sh`.
 
 | Package | Purpose | Required |
 |---------|---------|:--------:|
-| `zsh` | Runs the wrapper scripts (`#!/usr/bin/env zsh`) | ✅ |
 | `jq` | Auto-patches `~/.claude/settings.json` with the statusLine hook | ✅ |
+
+`zsh` is **not** required. The wrapper runs under `bash` (4+) or `zsh` — whichever
+your system provides.
 
 ### macOS only
 
@@ -119,16 +122,16 @@ re-run `./install.sh`.
 
 ```bash
 # Debian / Ubuntu / WSL
-sudo apt-get install -y zsh jq
+sudo apt-get install -y jq
 
 # Fedora / RHEL
-sudo dnf install -y zsh jq
+sudo dnf install -y jq
 
 # Arch
-sudo pacman -S --noconfirm zsh jq
+sudo pacman -S --noconfirm jq
 
 # macOS (Homebrew)
-brew install jq python3   # zsh ships with macOS 10.15+
+brew install jq python3
 ```
 
 ---
@@ -148,7 +151,7 @@ The installer will:
 2. Detect your `claude` binary path automatically
 3. Copy `claude-smart-resume.sh` and `statusline.sh` to `~/.claude/`
 4. Patch the wrapper with your detected binary path
-5. Offer to add the alias to your `~/.zshrc` or `~/.bashrc`
+5. Offer to add the alias to your `~/.zshrc` or `~/.bashrc` and source it immediately
 6. Register the `statusLine` hook in `~/.claude/settings.json`
 7. Print a summary of everything done
 
@@ -192,22 +195,22 @@ Common locations:
 
 Open `~/.claude/claude-smart-resume.sh` and set `CLAUDE_BIN` at the top:
 
-```zsh
+```bash
 CLAUDE_BIN="/home/yourname/.local/bin/claude"   # replace with your actual path
 ```
 
 **Step 3 — Add the alias**
 
-Add to your `~/.zshrc` or `~/.bashrc`:
+Add to your `~/.bashrc` or `~/.zshrc`:
 
-```zsh
+```bash
 alias claude="$HOME/.claude/claude-smart-resume.sh"
 ```
 
 Reload your shell:
 
 ```bash
-source ~/.zshrc   # or source ~/.bashrc
+source ~/.bashrc   # or source ~/.zshrc
 ```
 
 Verify:
@@ -249,9 +252,9 @@ the installer handles everything.
 **Option B — Windows Claude Code app called via WSL path interop:**
 
 Sessions are stored in the Windows user profile. After installation, open
-`~/.claude/claude-smart-resume.sh` and update `PROJECTS_DIR` at the top:
+`~/.claude/claude-smart-resume.sh` and update the path variables at the top:
 
-```zsh
+```bash
 WIN_USER="YourWindowsUsername"
 CLAUDE_BIN="/mnt/c/Users/${WIN_USER}/AppData/Local/AnthropicClaude/claude.exe"
 PROJECTS_DIR="/mnt/c/Users/${WIN_USER}/AppData/Roaming/Claude/projects"
@@ -285,7 +288,7 @@ appear again. Add any directory you work in regularly.
 
 Two constants at the top of `~/.claude/claude-smart-resume.sh`:
 
-```zsh
+```bash
 CLAUDE_BIN="/home/yourname/.local/bin/claude"   # path to real claude binary
 BUFFER_SECS=60                                   # extra wait after reset (default: 1 min)
 ```
@@ -316,7 +319,7 @@ The wrapper resumes automatically. If you cancel the countdown (`Ctrl-C`) or nee
 resume from a different terminal, the wrapper prints the exact command you need:
 
 ```
-  Cancelled. Resume manually when limits clear:
+  Cancelled. Resume manually:
     claude --resume a1b2c3d4-...
 ```
 
@@ -334,7 +337,7 @@ find ~/.claude/projects -name "*.jsonl" -printf '%T@ %p\n' \
 ## Opting Out for One Command
 
 ```bash
-command claude [args]   # bypasses alias in both zsh and bash
+command claude [args]   # bypasses alias in both bash and zsh
 ```
 
 ---
@@ -344,7 +347,7 @@ command claude [args]   # bypasses alias in both zsh and bash
 Shorthand aliases get auto-resume automatically — the shell expands `claude` through
 the wrapper:
 
-```zsh
+```bash
 alias cc='claude'
 alias cca='claude --permission-mode auto'
 alias ccr='claude --resume'
@@ -353,7 +356,7 @@ alias ccskip='claude --dangerously-skip-permissions'
 
 **One exception:** aliases using `env` or `command` bypass alias expansion:
 
-```zsh
+```bash
 # This does NOT go through the wrapper:
 alias mybot='env -u MY_TOKEN claude --channels ...'
 
@@ -411,8 +414,7 @@ without requiring you to be present.
 
 ## Limitations
 
-- **~2 s detection lag** — watcher polls every 2 s in Phase 2; the RL menu may flash briefly before `SIGINT`. Cosmetic only.
-- **Blind before 90%** — if a hard cap hits before statusline reaches 90%, Phase 1 stays idle and the RL menu shows normally. Wrapper still resumes correctly after clean exit.
+- **~5 s detection lag** — watcher polls every 5 s; the RL menu may flash briefly before `SIGINT`. Cosmetic only.
 - **CWD-based session lookup** — session is found by current directory. Falls back to most-recent global session if you `cd` elsewhere.
 - **Clean exit required** — if Claude crashes or is force-killed, the JSONL may not contain the rate-limit line and the wrapper won't trigger.
 
@@ -439,7 +441,7 @@ Use of Claude Code itself is subject to [Anthropic's Terms of Service](https://w
 
 ## License
 
-MIT License — Copyright (c) 2026 
+MIT License — Copyright (c) 2026
 Author: Karthikeyan N
 
 See [LICENSE](LICENSE) for the full text.
