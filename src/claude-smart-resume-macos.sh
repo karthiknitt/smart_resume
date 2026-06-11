@@ -153,14 +153,14 @@ get_reset_info() {
   # the "(timezone)" so code content stored in the JSONL ("presets … (",
   # "factory resets the device (") never matches.
   reset_line=$(tail -n "+${start_line}" "$session_file" 2>/dev/null \
-    | grep -iE '(^|[^[:alnum:]])resets [^(]*[0-9]+:[0-9][0-9][^(]*\(' | tail -1)
+    | grep -iE '(^|[^[:alnum:]])resets [^(]*[0-9]+(:[0-9][0-9]|[[:space:]]?[ap]m)[^(]*\(' | tail -1)
   [[ -z "$reset_line" ]] && return 0
 
   local match reset_time reset_tz line_ts
   # Greedy .* keeps the LAST "resets …(tz)" on the line and ties the timezone
   # to that occurrence — unrelated parens elsewhere on the line are ignored.
   match=$(echo "$reset_line" | sed -nE \
-    's/.*[^[:alnum:]][Rr][Ee][Ss][Ee][Tt][Ss] ([^(]*[0-9]+:[0-9][0-9][^(]*)\(([^)]+)\).*/\1|\2/p')
+    's/.*[^[:alnum:]][Rr][Ee][Ss][Ee][Tt][Ss] ([^(]*[0-9]+(:[0-9][0-9]|[[:space:]]?[AaPp][Mm])[^(]*)\(([^)]+)\).*/\1|\3/p')
   [[ -z "$match" ]] && return 0
   reset_time=$(echo "${match%%|*}" | sed 's/[[:space:]]*$//')
   reset_tz=${match##*|}
@@ -253,7 +253,8 @@ if epoch is None:
             pass
 
 if epoch is None:
-    for fmt in ('%I:%M%p', '%I:%M %p'):
+    # Time-only forms: "6:20pm", "7:30 pm", "3pm", "3 pm", "18:20"
+    for fmt in ('%I:%M%p', '%I:%M %p', '%I%p', '%I %p', '%H:%M'):
         try:
             t = datetime.datetime.strptime(reset_clean, fmt)
             t = anchor.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
@@ -349,7 +350,7 @@ _rl_watcher() {
     current=$(wc -l < "$session_file" 2>/dev/null | tr -d ' ' || echo 0)
     if (( current > baseline )); then
       if tail -n "+$(( baseline + 1 ))" "$session_file" 2>/dev/null \
-          | grep -qiE '(^|[^[:alnum:]])resets [^(]*[0-9]+:[0-9][0-9][^(]*\('; then
+          | grep -qiE '(^|[^[:alnum:]])resets [^(]*[0-9]+(:[0-9][0-9]|[[:space:]]?[ap]m)[^(]*\('; then
         sleep 0.3   # let claude finish writing the entry
         kill -INT "$claude_pid" 2>/dev/null
         return

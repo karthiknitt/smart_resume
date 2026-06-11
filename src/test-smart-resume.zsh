@@ -246,6 +246,20 @@ f=$(mkjsonl "26-nested.jsonl" \
 r=$(get_reset_info "$f")
 [[ "$r" == "8:00pm UTC" ]] && pass "RL inside nested result field → extracted" || fail "RL in result field" "$r"
 
+# 26a-1. Hour-only reset time ("3pm") — no minutes, still detected
+f=$(mkjsonl "26a1-hour-only.jsonl" \
+  '{"type":"error","error":{"message":"You'\''ve hit your session limit · resets 3pm (Europe/Dublin)"}}')
+r=$(get_reset_info "$f")
+[[ "$r" == "3pm Europe/Dublin" ]] && pass "hour-only reset time → detected" \
+  || fail "hour-only reset time" "$r"
+
+# 26a-2. Spaced meridiem ("7:30 pm") — still detected
+f=$(mkjsonl "26a2-spaced.jsonl" \
+  '{"type":"error","error":{"message":"resets 7:30 pm (UTC)"}}')
+r=$(get_reset_info "$f")
+[[ "$r" == "7:30 pm UTC" ]] && pass "spaced meridiem reset time → detected" \
+  || fail "spaced meridiem reset time" "$r"
+
 # 26b. Entry timestamp emitted as second line (anchors stale-entry detection)
 f=$(mkjsonl "26b-anchored.jsonl" \
   '{"timestamp":"2026-06-11T11:23:52.000Z","type":"error","error":{"message":"You'\''ve hit your session limit · resets 6:20pm (Europe/Oslo)"}}')
@@ -351,6 +365,20 @@ if [[ -n "$fresh_anchor" && -n "$fresh_time" ]]; then
   fi
 else
   fail "fresh anchored entry → valid future epoch" "could not build fixture (GNU date missing?)"
+fi
+
+# 34e. Hour-only ("11pm") and spaced meridiem ("11:59 pm") parse as time-only
+r=$(parse_reset_epoch "11pm" "UTC" 2>/dev/null); rc=$?
+if (( rc == 0 )) && [[ -n "$r" ]] && (( r > now )); then
+  pass "hour-only time → valid future epoch"
+else
+  fail "hour-only time → valid future epoch" "rc=$rc epoch=$r"
+fi
+r=$(parse_reset_epoch "11:59 pm" "UTC" 2>/dev/null); rc=$?
+if (( rc == 0 )) && [[ -n "$r" ]] && (( r > now )); then
+  pass "spaced meridiem time → valid future epoch"
+else
+  fail "spaced meridiem time → valid future epoch" "rc=$rc epoch=$r"
 fi
 
 # 34d. Month/day without year → anchored to the entry's year, not the current
@@ -786,6 +814,32 @@ PY
   else
     skip "python3 not available — skipping macOS future date test"
   fi
+
+  # 74b-1. macOS hour-only + spaced meridiem time-only forms
+  if command -v python3 &>/dev/null; then
+    now_mac=$(date +%s)
+    r=$(parse_reset_epoch "11pm" "UTC" 2>/dev/null); rc=$?
+    if (( rc == 0 )) && [[ -n "$r" ]] && (( r > now_mac )); then
+      pass "macOS parse_reset_epoch: hour-only time → valid future epoch"
+    else
+      fail "macOS parse_reset_epoch: hour-only time" "rc=$rc epoch=$r"
+    fi
+    r=$(parse_reset_epoch "11:59 pm" "UTC" 2>/dev/null); rc=$?
+    if (( rc == 0 )) && [[ -n "$r" ]] && (( r > now_mac )); then
+      pass "macOS parse_reset_epoch: spaced meridiem → valid future epoch"
+    else
+      fail "macOS parse_reset_epoch: spaced meridiem" "rc=$rc epoch=$r"
+    fi
+  else
+    skip "python3 not available — skipping macOS hour-only/spaced tests"
+  fi
+
+  # 74b-2. macOS get_reset_info: hour-only reset time detected
+  f=$(mkjsonl "74b2-mac-hour-only.jsonl" \
+    '{"type":"error","error":{"message":"You'\''ve hit your session limit · resets 3pm (Europe/Dublin)"}}')
+  r=$(get_reset_info "$f")
+  [[ "$r" == "3pm Europe/Dublin" ]] && pass "macOS get_reset_info: hour-only reset time → detected" \
+    || fail "macOS get_reset_info: hour-only reset time" "$r"
 
   # 74c. macOS parse_reset_epoch: stale anchored entry → exit 1.
   # Anchored to a timestamp 6 h ago, a "resets <3 h ago>" time has already

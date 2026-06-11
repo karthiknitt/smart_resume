@@ -139,14 +139,14 @@ get_reset_info() {
   # the "(timezone)" so code content stored in the JSONL ("presets … (",
   # "factory resets the device (") never matches.
   reset_line=$(tail -n "+${start_line}" "$session_file" 2>/dev/null \
-    | grep -iE '(^|[^[:alnum:]])resets [^(]*[0-9]+:[0-9][0-9][^(]*\(' | tail -1)
+    | grep -iE '(^|[^[:alnum:]])resets [^(]*[0-9]+(:[0-9][0-9]|[[:space:]]?[ap]m)[^(]*\(' | tail -1)
   [[ -z "$reset_line" ]] && return 0
   local match reset_time reset_tz line_ts
   # Capture "TIME (tz)" as one match so the timezone is tied to the "resets"
   # occurrence — handles "7:30pm (tz)", "Apr 26 7:30pm (tz)",
   # "Apr 26, 2026 7:30pm (tz)", etc. tail -1 keeps the last occurrence.
   match=$(echo "$reset_line" \
-    | grep -oP '(?i)(?<![[:alnum:]])resets \K[^(]*[0-9]+:[0-9][0-9][^(]*\([^)]+\)' | tail -1)
+    | grep -oP '(?i)(?<![[:alnum:]])resets \K[^(]*[0-9]+(:[0-9][0-9]|\s?[ap]m)[^(]*\([^)]+\)' | tail -1)
   [[ -z "$match" ]] && return 0
   # sed (not ${match%%(*}) — zsh rejects "(" in parameter-expansion patterns
   reset_time=$(echo "$match" | sed 's/ *(.*$//; s/[[:space:]]*$//')
@@ -195,9 +195,10 @@ parse_reset_epoch() {
   if [[ -n "$anchor_iso" ]]; then
     anchor_epoch=$(date -d "$anchor_iso" +%s 2>/dev/null) || anchor_epoch=$now_epoch
   fi
-  if [[ "$reset_time" =~ ^[0-9]+:[0-9]+[apmAPM]+$ ]]; then
-    # Time-only: resolve on the anchor's calendar day in the reset TZ,
-    # rolling over to the next day if that time had already passed THEN.
+  if [[ "$reset_time" =~ ^([0-9]{1,2}:[0-9]{2}([[:space:]]?[AaPp][Mm])?|[0-9]{1,2}[[:space:]]?[AaPp][Mm])$ ]]; then
+    # Time-only ("6:20pm", "7:30 pm", "3pm", "18:20"): resolve on the anchor's
+    # calendar day in the reset TZ, rolling over to the next day if that time
+    # had already passed THEN.
     local anchor_day
     anchor_day=$(TZ="$reset_tz" date -d "@${anchor_epoch}" +%Y-%m-%d 2>/dev/null) || return 1
     reset_epoch=$(TZ="$reset_tz" date -d "${anchor_day} ${reset_time}" +%s 2>/dev/null) || return 1
@@ -292,7 +293,7 @@ _rl_watcher() {
     current=$(wc -l < "$session_file" 2>/dev/null | tr -d ' ' || echo 0)
     if (( current > baseline )); then
       if tail -n "+$(( baseline + 1 ))" "$session_file" 2>/dev/null \
-          | grep -qiE '(^|[^[:alnum:]])resets [^(]*[0-9]+:[0-9][0-9][^(]*\('; then
+          | grep -qiE '(^|[^[:alnum:]])resets [^(]*[0-9]+(:[0-9][0-9]|[[:space:]]?[ap]m)[^(]*\('; then
         sleep 0.3   # let claude finish writing the entry
         kill -INT "$claude_pid" 2>/dev/null
         return
