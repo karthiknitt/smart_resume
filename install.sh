@@ -167,7 +167,17 @@ detect_claude_bin() {
   }
 
   if [[ -n "${SHELL:-}" && -x "${SHELL}" ]]; then
-    bin=$("${SHELL}" -c 'whence -p claude 2>/dev/null' 2>/dev/null || true)
+    case "${SHELL##*/}" in
+      zsh)
+        bin=$("${SHELL}" -c 'whence -p claude 2>/dev/null' 2>/dev/null || true)
+        ;;
+      bash)
+        bin=$("${SHELL}" -c 'type -P claude 2>/dev/null' 2>/dev/null || true)
+        ;;
+      *)
+        bin=$("${SHELL}" -c 'command -v claude 2>/dev/null' 2>/dev/null || true)
+        ;;
+    esac
     is_usable_claude_bin "$bin" || bin=""
   fi
 

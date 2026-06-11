@@ -984,9 +984,23 @@ run_skip_permission_tests() {
   # management commands.
   assert_skip_permission_decision "$script" "$platform" add "plain prompt" "fix this bug"
   assert_skip_permission_decision "$script" "$platform" add "resume command" --resume abc123
+  assert_skip_permission_decision "$script" "$platform" add "model option then prompt" --model sonnet -- "fix this"
+  assert_skip_permission_decision "$script" "$platform" block "help short" -h
+  assert_skip_permission_decision "$script" "$platform" block "help long" --help
+  assert_skip_permission_decision "$script" "$platform" block "version short" -v
+  assert_skip_permission_decision "$script" "$platform" block "version long" --version
+  assert_skip_permission_decision "$script" "$platform" block "dangerously-skip-permissions idempotent" --dangerously-skip-permissions
+  assert_skip_permission_decision "$script" "$platform" block "dangerously-skip-permissions repeated" --dangerously-skip-permissions --dangerously-skip-permissions
   assert_skip_permission_decision "$script" "$platform" block "print mode" --print "status"
+  assert_skip_permission_decision "$script" "$platform" block "print mode after max turns" --max-turns 3 -p "status"
+  assert_skip_permission_decision "$script" "$platform" block "print mode after permission tool" --permission-prompt-tool mcp_auth_tool -p "status"
   assert_skip_permission_decision "$script" "$platform" block "explicit permission mode" --permission-mode plan
   assert_skip_permission_decision "$script" "$platform" block "explicit permission mode assignment" --permission-mode=auto
+  assert_skip_permission_decision "$script" "$platform" block "resume then explicit permission mode" --resume abc123 --permission-mode plan
+  assert_skip_permission_decision "$script" "$platform" block "background mode" --bg "investigate"
+  assert_skip_permission_decision "$script" "$platform" block "background mode assignment" --bg=investigate
+  assert_skip_permission_decision "$script" "$platform" block "remote web mode" --remote "fix login"
+  assert_skip_permission_decision "$script" "$platform" block "remote web mode assignment" --remote=fix-login
   assert_skip_permission_decision "$script" "$platform" block "attach management command" attach abc123
   assert_skip_permission_decision "$script" "$platform" block "logs management command" logs abc123
   assert_skip_permission_decision "$script" "$platform" block "stop management command" stop abc123

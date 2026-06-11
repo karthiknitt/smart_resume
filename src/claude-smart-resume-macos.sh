@@ -46,12 +46,15 @@ _is_truthy() {
 _claude_option_consumes_value() {
   case "$1" in
     --add-dir|--agent|--agents|--allowedTools|--allowed-tools|\
-    --append-system-prompt|--betas|--debug-file|--disallowedTools|\
+    --advisor|--append-system-prompt|--append-system-prompt-file|\
+    --betas|--channels|--debug-file|--disallowedTools|\
     --disallowed-tools|--effort|--fallback-model|--file|\
-    --input-format|--json-schema|--max-budget-usd|--mcp-config|\
-    --model|-m|-n|--name|--output-format|--plugin-dir|\
-    --plugin-url|--remote-control-session-name-prefix|--setting-sources|\
-    --settings|--system-prompt|--tools)
+    --input-format|--json-schema|--max-budget-usd|--max-turns|\
+    --mcp-config|--model|-m|-n|--name|--output-format|\
+    --permission-prompt-tool|--plugin-dir|--plugin-url|\
+    --remote-control-session-name-prefix|--setting-sources|\
+    --settings|--system-prompt|--system-prompt-file|\
+    --teammate-mode|--tools)
       return 0
       ;;
   esac
@@ -71,7 +74,7 @@ _claude_builtin_command_name() {
 }
 
 _should_add_skip_permissions() {
-  local arg skip_next=0
+  local arg skip_next=0 first_non_option=1
 
   for arg in "$@"; do
     if (( skip_next )); then
@@ -87,13 +90,16 @@ _should_add_skip_permissions() {
       --permission-mode|--permission-mode=*)
         return 1
         ;;
+      --bg|--bg=*|--remote|--remote=*)
+        return 1
+        ;;
       --)
         return 0
         ;;
       --resume|--resume=*|-r|--continue|-c|\
       --session-id|--session-id=*|--remote-control|--remote-control=*|\
       --from-pr|--from-pr=*|--worktree|--worktree=*|-w|-w=*)
-        return 0
+        continue
         ;;
       -*)
         if [[ "$arg" != *=* ]] && _claude_option_consumes_value "$arg"; then
@@ -102,8 +108,11 @@ _should_add_skip_permissions() {
         continue
         ;;
       *)
-        _claude_builtin_command_name "$arg" && return 1
-        return 0
+        if (( first_non_option )); then
+          _claude_builtin_command_name "$arg" && return 1
+          first_non_option=0
+        fi
+        continue
         ;;
     esac
   done
