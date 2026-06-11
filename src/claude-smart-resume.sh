@@ -31,6 +31,79 @@ _magenta() { printf '\e[35m%s\e[0m'   "$*" >&2; }
 _white()   { printf '\e[1;97m%s\e[0m' "$*" >&2; }
 _nl()      { printf '\n' >&2; }
 
+_is_truthy() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_claude_option_consumes_value() {
+  case "$1" in
+    --add-dir|--agent|--agents|--allowedTools|--allowed-tools|\
+    --append-system-prompt|--betas|--debug-file|--disallowedTools|\
+    --disallowed-tools|--effort|--fallback-model|--file|\
+    --input-format|--json-schema|--max-budget-usd|--mcp-config|\
+    --model|-m|-n|--name|--output-format|--permission-mode|--plugin-dir|\
+    --plugin-url|--remote-control-session-name-prefix|--setting-sources|\
+    --settings|--system-prompt|--tools)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+_claude_builtin_command_name() {
+  case "$1" in
+    agents|auth|auto-mode|config|api-key|daemon|doctor|install|mcp|\
+    experimental-next|plugin|plugins|project|rc|remote-control|setup-token|\
+    ultrareview|update|upgrade)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+_should_add_skip_permissions() {
+  local arg skip_next=0
+
+  for arg in "$@"; do
+    if (( skip_next )); then
+      skip_next=0
+      continue
+    fi
+
+    case "$arg" in
+      --dangerously-skip-permissions)
+        return 1
+        ;;
+      --help|-h|--version|-v)
+        return 1
+        ;;
+      --)
+        return 0
+        ;;
+      --print|--print=*|-p|--resume|--resume=*|-r|--continue|-c|\
+      --session-id|--session-id=*|--remote-control|--remote-control=*|\
+      --from-pr|--from-pr=*|--worktree|--worktree=*|-w|-w=*)
+        return 0
+        ;;
+      -*)
+        if [[ "$arg" != *=* ]] && _claude_option_consumes_value "$arg"; then
+          skip_next=1
+        fi
+        continue
+        ;;
+      *)
+        _claude_builtin_command_name "$arg" && return 1
+        return 0
+        ;;
+    esac
+  done
+
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 find_latest_session() {
   local encoded_cwd
@@ -199,6 +272,11 @@ _rl_watcher() {
 _run_claude() {
   rm -f "${HOME}/.claude/.rl_warn"   # reset flag — each run starts clean
   local my_pid=$$
+  local -a extra_args=()
+  if _is_truthy "${CLAUDE_SMART_RESUME_SKIP_PERMISSIONS:-}" \
+      && _should_add_skip_permissions "$@"; then
+    extra_args+=(--dangerously-skip-permissions)
+  fi
 
   # Start the watcher before claude. It waits for claude to appear as a child
   # of this shell, then starts JSONL polling for a rate-limit entry.
@@ -226,7 +304,7 @@ _run_claude() {
   local watcher_pid=$!
 
   trap 'true' INT
-  "$CLAUDE_BIN" "$@"
+  "$CLAUDE_BIN" "${extra_args[@]}" "$@"
   trap - INT
 
   kill "$watcher_pid" 2>/dev/null
@@ -298,12 +376,17 @@ main() {
       [[ -z "$reset_info" ]] && break
 
       local reset_time='' reset_tz=''
-      reset_time=$(echo "$reset_info" | awk '{print $1}')
-      reset_tz=$(echo "$reset_info"   | awk '{print $2}')
+      reset_tz=${reset_info##* }
+      reset_time=${reset_info%" $reset_tz"}
       reset_epoch=$(parse_reset_epoch "$reset_time" "$reset_tz") || break
     fi
 
     local wake_epoch=$(( reset_epoch + BUFFER_SECS ))
+    local now_epoch
+    now_epoch=$(date +%s)
+    if (( wake_epoch <= now_epoch )); then
+      wake_epoch=$(( now_epoch + BUFFER_SECS ))
+    fi
 
     local session_id=''
     session_id=$(basename "$session_file" .jsonl)

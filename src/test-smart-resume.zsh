@@ -46,12 +46,13 @@ mkjsonl() {
 
 # ---------------------------------------------------------------------------
 # Helper: source just the function definitions from a wrapper script.
-# Stops before "resume_id=" which starts the main loop.
+# Stops before the final main invocation so tests source functions without
+# launching a real Claude session.
 # ---------------------------------------------------------------------------
 source_functions() {
   local script="$1"
   CLAUDE_BIN="/bin/true"
-  source <(awk '/^resume_id=/{exit} {print}' "$script") 2>/dev/null \
+  source <(awk '/^main "\$@"/{exit} {print}' "$script") 2>/dev/null \
     || { printf "${RED}ERROR${RST}: could not source %s\n" "$script"; return 1; }
 }
 
@@ -668,37 +669,46 @@ else
   [[ "$r" == "mac-session" ]] && pass "macOS get_session_name (sed -E): correct name" \
     || fail "macOS get_session_name" "$r"
 
-  # 72. macOS parse_reset_epoch (python3): time-only string
-  # KNOWN LIMITATION: Python3 strptime("%Y %I:%M%p") defaults month/day to Jan 1,
-  # not today. So "11:59pm" resolves to Jan 1 <year> 11:59pm. The +86400 rollover
-  # only adds one day — if it's past January the result is still months in the past.
-  # GNU date -d "11:59pm" correctly means *today* at that time. This divergence is
-  # intentional on real macOS where RL messages always include full dates.
+  # 72. macOS parse_reset_epoch (python3): time-only future resolves today
   if command -v python3 &>/dev/null; then
-    r=$(parse_reset_epoch "11:59pm" "UTC" 2>/dev/null); rc=$?
-    if (( rc == 0 )) && [[ "$r" =~ ^[0-9]+$ ]]; then
-      warn "macOS parse_reset_epoch (python3): time-only returns epoch $r (may be past — Jan-1 default; known macOS limitation)"
+    future_pair=$(TZ=UTC python3 - <<'PY'
+import datetime
+t = datetime.datetime.now() + datetime.timedelta(minutes=5)
+print(t.strftime('%I:%M%p').lower().lstrip('0'), int(t.timestamp()))
+PY
+)
+    read -r future_time future_epoch <<< "$future_pair"
+    r=$(parse_reset_epoch "$future_time" "UTC" 2>/dev/null); rc=$?
+    if (( rc == 0 )) && [[ "$r" =~ ^[0-9]+$ ]] && (( r >= future_epoch - 60 && r <= future_epoch + 60 )); then
+      pass "macOS parse_reset_epoch (python3): time-only future resolves today"
     else
-      fail "macOS parse_reset_epoch (python3): time-only should return integer epoch" "rc=$rc r=$r"
+      fail "macOS parse_reset_epoch (python3): time-only future resolves today" "rc=$rc r=$r expected≈$future_epoch"
     fi
   else
     skip "python3 not available — skipping macOS parse_reset_epoch test"
   fi
 
-  # 73. macOS parse_reset_epoch (python3): past time — same Jan-1 limitation applies
+  # 73. macOS parse_reset_epoch (python3): time-only past rolls to tomorrow
   if command -v python3 &>/dev/null; then
-    r=$(parse_reset_epoch "12:01am" "UTC" 2>/dev/null); rc=$?
-    if (( rc == 0 )) && [[ "$r" =~ ^[0-9]+$ ]]; then
-      warn "macOS parse_reset_epoch (python3): 12:01am returns epoch $r (Jan-1 default; known macOS limitation)"
+    past_pair=$(TZ=UTC python3 - <<'PY'
+import datetime
+t = datetime.datetime.now() - datetime.timedelta(minutes=5)
+print(t.strftime('%I:%M%p').lower().lstrip('0'), int(t.timestamp()))
+PY
+)
+    read -r past_time past_epoch <<< "$past_pair"
+    now_mac=$(date +%s)
+    r=$(parse_reset_epoch "$past_time" "UTC" 2>/dev/null); rc=$?
+    if (( rc == 0 )) && [[ "$r" =~ ^[0-9]+$ ]] && (( r > now_mac && r >= past_epoch + 86300 )); then
+      pass "macOS parse_reset_epoch (python3): time-only past rolls to tomorrow"
     else
-      fail "macOS parse_reset_epoch (python3): 12:01am should return integer epoch" "rc=$rc r=$r"
+      fail "macOS parse_reset_epoch (python3): time-only past rolls to tomorrow" "rc=$rc r=$r past=$past_epoch now=$now_mac"
     fi
   else
     skip "python3 not available — skipping macOS rollover test"
   fi
 
   # 74. macOS parse_reset_epoch (python3): full date in past → exit 1
-  # Full dates DO work correctly — the Jan-1 default only affects time-only strings
   if command -v python3 &>/dev/null; then
     parse_reset_epoch "Jan 1, 2020 12:00am" "UTC" > /dev/null 2>&1; rc=$?
     (( rc != 0 )) && pass "macOS parse_reset_epoch (python3): past full date → exit 1" \
@@ -812,7 +822,7 @@ run_dep_check() {
 }
 
 # 77. All deps present (linux) → exits 0, reports "All dependencies present"
-out=$(run_dep_check "linux" zsh jq)
+out=$(run_dep_check "linux" jq)
 rc=$?
 if (( rc == 0 )) && echo "$out" | grep -qi 'dependencies present\|all.*present'; then
   pass "all deps present (linux) → exit 0, 'present' message"
@@ -820,17 +830,17 @@ else
   fail "all deps present (linux) → exit 0" "rc=$rc output: $out"
 fi
 
-# 78. zsh missing → exits non-zero, lists zsh as missing
+# 78. zsh missing → still exits 0; wrappers run under bash or zsh
 out=$(run_dep_check "linux" jq)
 rc=$?
-if (( rc != 0 )) && echo "$out" | grep -q 'zsh'; then
-  pass "zsh missing → exit non-zero, lists zsh"
+if (( rc == 0 )) && ! echo "$out" | grep -q 'zsh'; then
+  pass "zsh missing → still allowed"
 else
-  fail "zsh missing → exit non-zero" "rc=$rc output: $out"
+  fail "zsh missing → should still be allowed" "rc=$rc output: $out"
 fi
 
 # 79. jq missing → exits non-zero, lists jq as missing
-out=$(run_dep_check "linux" zsh)
+out=$(run_dep_check "linux")
 rc=$?
 if (( rc != 0 )) && echo "$out" | grep -q 'jq'; then
   pass "jq missing → exit non-zero, lists jq"
@@ -838,17 +848,17 @@ else
   fail "jq missing → exit non-zero" "rc=$rc output: $out"
 fi
 
-# 80. Both zsh and jq missing → exit non-zero, both listed
+# 80. Missing jq does not list zsh
 out=$(run_dep_check "linux")
 rc=$?
-if (( rc != 0 )) && echo "$out" | grep -q 'zsh' && echo "$out" | grep -q 'jq'; then
-  pass "both missing → exit non-zero, both listed"
+if (( rc != 0 )) && echo "$out" | grep -q 'jq' && ! echo "$out" | grep -q 'zsh'; then
+  pass "jq missing → zsh is not listed"
 else
-  fail "both missing → exit non-zero, both listed" "rc=$rc output: $out"
+  fail "jq missing → should not list zsh" "rc=$rc output: $out"
 fi
 
 # 81. Missing dep → install command suggested (apt-get stub present)
-out=$(run_dep_check "linux" zsh)
+out=$(run_dep_check "linux")
 if echo "$out" | grep -q 'apt-get\|install'; then
   pass "missing dep → install command suggested"
 else
@@ -856,7 +866,7 @@ else
 fi
 
 # 82. Missing dep → script never executes sudo itself (no 'sudo' in output)
-out=$(run_dep_check "linux" zsh)
+out=$(run_dep_check "linux")
 if echo "$out" | grep -q '^sudo '; then
   fail "installer must not execute sudo — only print the command" "$out"
 else
@@ -864,7 +874,7 @@ else
 fi
 
 # 83. macOS platform: python3 required → missing python3 listed
-out=$(run_dep_check "macos" zsh jq)
+out=$(run_dep_check "macos" jq)
 rc=$?
 if (( rc != 0 )) && echo "$out" | grep -q 'python3'; then
   pass "macOS: python3 missing → exit non-zero, lists python3"
@@ -873,7 +883,7 @@ else
 fi
 
 # 84. macOS platform: all deps present → exit 0
-out=$(run_dep_check "macos" zsh jq python3)
+out=$(run_dep_check "macos" jq python3)
 rc=$?
 if (( rc == 0 )); then
   pass "macOS: all deps present → exit 0"
@@ -882,10 +892,10 @@ else
 fi
 
 # 85. WSL platform (same as linux): no python3 required
-out=$(run_dep_check "wsl" zsh jq)
+out=$(run_dep_check "wsl" jq)
 rc=$?
 if (( rc == 0 )); then
-  pass "WSL: python3 not required → exit 0 with only zsh+jq"
+  pass "WSL: python3 not required → exit 0 with jq"
 else
   fail "WSL: python3 not required → exit 0" "rc=$rc output: $out"
 fi
