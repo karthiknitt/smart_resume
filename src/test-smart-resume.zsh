@@ -991,6 +991,7 @@ run_skip_permission_tests() {
   assert_skip_permission_decision "$script" "$platform" block "version long" --version
   assert_skip_permission_decision "$script" "$platform" block "dangerously-skip-permissions idempotent" --dangerously-skip-permissions
   assert_skip_permission_decision "$script" "$platform" block "dangerously-skip-permissions repeated" --dangerously-skip-permissions --dangerously-skip-permissions
+  assert_skip_permission_decision "$script" "$platform" block "allow skip-permissions cycle flag" --allow-dangerously-skip-permissions
   assert_skip_permission_decision "$script" "$platform" block "print mode" --print "status"
   assert_skip_permission_decision "$script" "$platform" block "print mode after max turns" --max-turns 3 -p "status"
   assert_skip_permission_decision "$script" "$platform" block "print mode after permission tool" --permission-prompt-tool mcp_auth_tool -p "status"

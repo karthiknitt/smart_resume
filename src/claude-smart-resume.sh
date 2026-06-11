@@ -82,6 +82,7 @@ _should_add_skip_permissions() {
         return 1
         ;;
       --help|-h|--version|-v|--print|--print=*|-p|\
+      --allow-dangerously-skip-permissions|--allow-dangerously-skip-permissions=*|\
       --permission-mode|--permission-mode=*)
         return 1
         ;;
