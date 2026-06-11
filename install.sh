@@ -147,6 +147,11 @@ detect_claude_bin() {
       return 1
     fi
 
+    if [[ -e "${CLAUDE_DIR}/${WRAPPER_NAME}" \
+          && "$candidate" -ef "${CLAUDE_DIR}/${WRAPPER_NAME}" ]]; then
+      return 1
+    fi
+
     if [[ -n "${_CMUX_CLAUDE_WRAPPER:-}" && -e "${_CMUX_CLAUDE_WRAPPER}" \
           && "$candidate" -ef "${_CMUX_CLAUDE_WRAPPER}" ]]; then
       return 1
@@ -235,15 +240,19 @@ patch_claude_bin() {
 
   # Replace the CLAUDE_BIN=... line in the installed script
   if awk -v bin="$CLAUDE_BIN" '
+    BEGIN { replaced = 0 }
     /^CLAUDE_BIN=/ {
+      replaced++
       print "CLAUDE_BIN=\"" bin "\""
       next
     }
     { print }
+    END { exit(replaced == 1 ? 0 : 1) }
   ' "$target" > "$tmp"; then
     mv "$tmp" "$target"
   else
     rm -f "$tmp"
+    err "Expected exactly one CLAUDE_BIN assignment in $target."
     exit 1
   fi
   chmod +x "$target"

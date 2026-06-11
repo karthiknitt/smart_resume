@@ -52,7 +52,7 @@ mkjsonl() {
 source_functions() {
   local script="$1"
   CLAUDE_BIN="/bin/true"
-  source <(awk '/^main "\$@"/{exit} {print}' "$script") 2>/dev/null \
+  source <(awk '/^[[:space:]]*main[[:space:]]+"\$@"([[:space:]]*#.*)?[[:space:]]*$/{exit} {print}' "$script") 2>/dev/null \
     || { printf "${RED}ERROR${RST}: could not source %s\n" "$script"; return 1; }
 }
 
@@ -699,7 +699,9 @@ PY
     read -r past_time past_epoch <<< "$past_pair"
     now_mac=$(date +%s)
     r=$(parse_reset_epoch "$past_time" "UTC" 2>/dev/null); rc=$?
-    if (( rc == 0 )) && [[ "$r" =~ ^[0-9]+$ ]] && (( r > now_mac && r >= past_epoch + 86300 )); then
+    min_roll=$(( past_epoch + 86300 ))
+    max_roll=$(( past_epoch + 86500 ))
+    if (( rc == 0 )) && [[ "$r" =~ ^[0-9]+$ ]] && (( r > now_mac && r >= min_roll && r <= max_roll )); then
       pass "macOS parse_reset_epoch (python3): time-only past rolls to tomorrow"
     else
       fail "macOS parse_reset_epoch (python3): time-only past rolls to tomorrow" "rc=$rc r=$r past=$past_epoch now=$now_mac"

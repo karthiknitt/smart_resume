@@ -300,6 +300,7 @@ Open the file and verify `CLAUDE_BIN` points to your `claude` binary:
 
 ```bash
 whence -p claude   # zsh: find the executable path
+type -P claude     # bash: find the executable path
 ```
 
 Add to your `~/.zshrc` or `~/.bashrc`:
@@ -404,6 +405,15 @@ Claude session, set:
 
 ```bash
 export CLAUDE_SMART_RESUME_SKIP_PERMISSIONS=1
+```
+
+Use this only in trusted environments/projects. It bypasses Claude permission
+prompts for wrapper-invoked interactive sessions.
+
+For one-off usage, prefer a scoped invocation instead of a global export:
+
+```bash
+CLAUDE_SMART_RESUME_SKIP_PERMISSIONS=1 claude
 ```
 
 **One exception:** aliases using `env` or `command` bypass alias expansion:

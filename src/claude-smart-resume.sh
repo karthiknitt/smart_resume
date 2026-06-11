@@ -77,13 +77,13 @@ _should_add_skip_permissions() {
       --dangerously-skip-permissions)
         return 1
         ;;
-      --help|-h|--version|-v)
+      --help|-h|--version|-v|--print|--print=*|-p)
         return 1
         ;;
       --)
         return 0
         ;;
-      --print|--print=*|-p|--resume|--resume=*|-r|--continue|-c|\
+      --resume|--resume=*|-r|--continue|-c|\
       --session-id|--session-id=*|--remote-control|--remote-control=*|\
       --from-pr|--from-pr=*|--worktree|--worktree=*|-w|-w=*)
         return 0
