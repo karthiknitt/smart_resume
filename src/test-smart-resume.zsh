@@ -342,11 +342,28 @@ fi
 # 34c. Fresh entry: anchored to now, reset 30 min ahead → valid future epoch
 fresh_anchor=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')
 fresh_time=$(TZ=UTC date -d '+30 minutes' '+%-I:%M%p' 2>/dev/null | tr 'A-Z' 'a-z')
-r=$(parse_reset_epoch "$fresh_time" "UTC" "$fresh_anchor" 2>/dev/null); rc=$?
-if (( rc == 0 )) && [[ -n "$r" ]] && (( r > now )); then
-  pass "fresh anchored entry → valid future epoch"
+if [[ -n "$fresh_anchor" && -n "$fresh_time" ]]; then
+  r=$(parse_reset_epoch "$fresh_time" "UTC" "$fresh_anchor" 2>/dev/null); rc=$?
+  if (( rc == 0 )) && [[ -n "$r" ]] && (( r > now )); then
+    pass "fresh anchored entry → valid future epoch"
+  else
+    fail "fresh anchored entry → valid future epoch" "rc=$rc epoch=$r"
+  fi
 else
-  fail "fresh anchored entry → valid future epoch" "rc=$rc epoch=$r"
+  fail "fresh anchored entry → valid future epoch" "could not build fixture (GNU date missing?)"
+fi
+
+# 34d. Month/day without year → anchored to the entry's year, not the current
+# year. A stale entry from 2020 mentioning tomorrow's month/day must resolve
+# to 2020 (past → rejected); GNU date alone would assume the current year and
+# produce a bogus future reset (regression: months-long countdown).
+yd_time=$(date -u -d tomorrow '+%b %d' 2>/dev/null)
+if [[ -n "$yd_time" ]]; then
+  r=$(parse_reset_epoch "$yd_time 11:55pm" "UTC" "2020-01-01T00:00:00.000Z" 2>/dev/null); rc=$?
+  (( rc != 0 )) && pass "yearless month/day anchored to entry year → stale entry rejected" \
+    || fail "yearless month/day anchored to entry year" "rc=$rc epoch=$r (expected non-zero: ${yd_time} 2020 is long past)"
+else
+  fail "yearless month/day anchored to entry year" "could not build fixture (GNU date missing?)"
 fi
 
 # ============================================================================

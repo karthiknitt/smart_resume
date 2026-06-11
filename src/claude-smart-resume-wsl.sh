@@ -224,9 +224,19 @@ parse_reset_epoch() {
     anchor_day=$(TZ="$reset_tz" date -d "@${anchor_epoch}" +%Y-%m-%d 2>/dev/null) || return 1
     reset_epoch=$(TZ="$reset_tz" date -d "${anchor_day} ${reset_time}" +%s 2>/dev/null) || return 1
     (( reset_epoch <= anchor_epoch )) && reset_epoch=$(( reset_epoch + 86400 ))
-  else
-    # GNU date -d handles "Apr 26 7:30pm", "Apr 26, 2026 7:30pm", etc.
+  elif [[ "$reset_time" =~ [0-9]{4} ]]; then
+    # Full date with explicit year ("Apr 26, 2026 7:30pm") — unambiguous.
     reset_epoch=$(TZ="$reset_tz" date -d "$reset_time" +%s 2>/dev/null) || return 1
+  else
+    # Month/day without year ("Apr 26 7:30pm"): GNU date would assume the
+    # CURRENT year — use the anchor's year instead, rolling forward one year
+    # if that instant had already passed when the entry was written.
+    local anchor_year
+    anchor_year=$(TZ="$reset_tz" date -d "@${anchor_epoch}" +%Y 2>/dev/null) || return 1
+    reset_epoch=$(TZ="$reset_tz" date -d "${reset_time} ${anchor_year}" +%s 2>/dev/null) || return 1
+    if (( reset_epoch <= anchor_epoch )); then
+      reset_epoch=$(TZ="$reset_tz" date -d "${reset_time} $(( anchor_year + 1 ))" +%s 2>/dev/null) || return 1
+    fi
   fi
   # Reset moment already passed → the limit has reset, nothing to wait for
   # (e.g. a stale entry from a previous period found after a normal exit).
