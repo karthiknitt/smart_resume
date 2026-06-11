@@ -166,8 +166,8 @@ detect_claude_bin() {
     return 0
   }
 
-  if command -v whence &>/dev/null; then
-    bin=$(whence -p claude 2>/dev/null || true)
+  if [[ -n "${SHELL:-}" && -x "${SHELL}" ]]; then
+    bin=$("${SHELL}" -c 'whence -p claude 2>/dev/null' 2>/dev/null || true)
     is_usable_claude_bin "$bin" || bin=""
   fi
 

@@ -944,6 +944,62 @@ else
 fi
 
 # ============================================================================
+# SECTION 14 — Cross-script: skip-permissions argument handling
+# ============================================================================
+section "14 · Cross-script · skip-permissions argument handling"
+
+assert_skip_permission_decision() {
+  local script="$1" platform="$2" expected="$3" label="$4"
+  shift 4
+
+  source_functions "$script" 2>/dev/null || {
+    fail "${platform} ${label}" "could not source wrapper"
+    return
+  }
+
+  _should_add_skip_permissions "$@"
+  local rc=$?
+
+  case "$expected" in
+    add)
+      (( rc == 0 )) && pass "${platform} ${label} → add skip permissions" \
+        || fail "${platform} ${label} → should add skip permissions" "rc=$rc"
+      ;;
+    block)
+      (( rc != 0 )) && pass "${platform} ${label} → do not add skip permissions" \
+        || fail "${platform} ${label} → should not add skip permissions" "rc=$rc"
+      ;;
+  esac
+}
+
+run_skip_permission_tests() {
+  local script="$1" platform="$2"
+
+  if [[ ! -f "$script" ]]; then
+    skip "${platform} wrapper not found — skipping skip-permissions tests"
+    return
+  fi
+
+  # Auto-skip is for interactive sessions, not explicit modes or
+  # management commands.
+  assert_skip_permission_decision "$script" "$platform" add "plain prompt" "fix this bug"
+  assert_skip_permission_decision "$script" "$platform" add "resume command" --resume abc123
+  assert_skip_permission_decision "$script" "$platform" block "print mode" --print "status"
+  assert_skip_permission_decision "$script" "$platform" block "explicit permission mode" --permission-mode plan
+  assert_skip_permission_decision "$script" "$platform" block "explicit permission mode assignment" --permission-mode=auto
+  assert_skip_permission_decision "$script" "$platform" block "attach management command" attach abc123
+  assert_skip_permission_decision "$script" "$platform" block "logs management command" logs abc123
+  assert_skip_permission_decision "$script" "$platform" block "stop management command" stop abc123
+  assert_skip_permission_decision "$script" "$platform" block "kill management command" kill abc123
+  assert_skip_permission_decision "$script" "$platform" block "remove management command" rm abc123
+  assert_skip_permission_decision "$script" "$platform" block "respawn management command" respawn abc123
+}
+
+run_skip_permission_tests "$LINUX_SCRIPT" "Linux"
+run_skip_permission_tests "$WSL_SCRIPT" "WSL"
+run_skip_permission_tests "$MACOS_SCRIPT" "macOS"
+
+# ============================================================================
 # Summary
 # ============================================================================
 printf "\n${BOLD}══════════════════════════════════════════════════════${RST}\n"

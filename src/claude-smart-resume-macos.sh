@@ -49,7 +49,7 @@ _claude_option_consumes_value() {
     --append-system-prompt|--betas|--debug-file|--disallowedTools|\
     --disallowed-tools|--effort|--fallback-model|--file|\
     --input-format|--json-schema|--max-budget-usd|--mcp-config|\
-    --model|-m|-n|--name|--output-format|--permission-mode|--plugin-dir|\
+    --model|-m|-n|--name|--output-format|--plugin-dir|\
     --plugin-url|--remote-control-session-name-prefix|--setting-sources|\
     --settings|--system-prompt|--tools)
       return 0
@@ -60,9 +60,10 @@ _claude_option_consumes_value() {
 
 _claude_builtin_command_name() {
   case "$1" in
-    agents|auth|auto-mode|config|api-key|daemon|doctor|install|mcp|\
+    agents|attach|auth|auto-mode|config|api-key|daemon|doctor|install|kill|\
+    logs|mcp|\
     experimental-next|plugin|plugins|project|rc|remote-control|setup-token|\
-    ultrareview|update|upgrade)
+    respawn|rm|stop|ultrareview|update|upgrade)
       return 0
       ;;
   esac
@@ -82,7 +83,8 @@ _should_add_skip_permissions() {
       --dangerously-skip-permissions)
         return 1
         ;;
-      --help|-h|--version|-v|--print|--print=*|-p)
+      --help|-h|--version|-v|--print|--print=*|-p|\
+      --permission-mode|--permission-mode=*)
         return 1
         ;;
       --)
