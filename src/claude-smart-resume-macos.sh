@@ -149,15 +149,31 @@ get_reset_info() {
   local reset_line
   # Only scan lines written after start_line so a post-resume loop never
   # re-matches the old "resets …(" entry that is still in the JSONL.
+  # The pattern requires a standalone word "resets" plus a clock time before
+  # the "(timezone)" so code content stored in the JSONL ("presets … (",
+  # "factory resets the device (") never matches.
   reset_line=$(tail -n "+${start_line}" "$session_file" 2>/dev/null \
-    | grep -i 'resets .*(' | tail -1)
+    | grep -iE '(^|[^[:alnum:]])resets [^(]*[0-9]+:[0-9][0-9][^(]*\(' | tail -1)
   [[ -z "$reset_line" ]] && return 0
 
-  local reset_time reset_tz
-  reset_time=$(echo "$reset_line" | sed -nE 's/.*[Rr]esets ([^(]+)\(.*/\1/p' | sed 's/[[:space:]]*$//')
-  reset_tz=$(echo "$reset_line"   | sed -nE 's/.*\(([^)]+)\).*/\1/p')
+  local match reset_time reset_tz line_ts
+  # Greedy .* keeps the LAST "resets …(tz)" on the line and ties the timezone
+  # to that occurrence — unrelated parens elsewhere on the line are ignored.
+  match=$(echo "$reset_line" | sed -nE \
+    's/.*[^[:alnum:]][Rr][Ee][Ss][Ee][Tt][Ss] ([^(]*[0-9]+:[0-9][0-9][^(]*)\(([^)]+)\).*/\1|\2/p')
+  [[ -z "$match" ]] && return 0
+  reset_time=$(echo "${match%%|*}" | sed 's/[[:space:]]*$//')
+  reset_tz=${match##*|}
 
-  [[ -n "$reset_time" && -n "$reset_tz" ]] && echo "${reset_time} ${reset_tz}" || true
+  # The entry's own timestamp anchors time-only strings like "6:20pm" to the
+  # day the message was written — not the day claude eventually exits.
+  line_ts=$(echo "$reset_line" | sed -nE 's/.*"timestamp":"([^"]+)".*/\1/p')
+
+  if [[ -n "$reset_time" && -n "$reset_tz" ]]; then
+    echo "${reset_time} ${reset_tz}"
+    [[ -n "$line_ts" ]] && echo "$line_ts"
+  fi
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -188,18 +204,33 @@ generate_name() {
 # BSD date -j can't reliably parse am/pm + timezone in one call.
 # ---------------------------------------------------------------------------
 parse_reset_epoch() {
-  local reset_time="$1" reset_tz="$2"
-  python3 - "$reset_time" "$reset_tz" <<'EOF'
+  local reset_time="$1" reset_tz="$2" anchor_iso="${3:-}"
+  python3 - "$reset_time" "$reset_tz" "$anchor_iso" <<'EOF'
 import sys, re, time, datetime, os
 
-reset_str = sys.argv[1].strip()
-tz        = sys.argv[2]
+reset_str  = sys.argv[1].strip()
+tz         = sys.argv[2]
+anchor_iso = sys.argv[3].strip() if len(sys.argv) > 3 else ''
 
 os.environ['TZ'] = tz
 time.tzset()
 
-now   = datetime.datetime.now()
-epoch = None
+now_epoch = int(time.time())
+
+# Anchor relative time strings to the moment the rate-limit entry was written
+# (if known), NOT to claude's exit time. A stale "resets 6:20pm" from an
+# earlier period must resolve to 6:20pm on ITS day — otherwise an already-
+# passed reset gets bumped a full day into the future.
+anchor_epoch = now_epoch
+if anchor_iso:
+    try:
+        anchor_epoch = int(datetime.datetime.fromisoformat(
+            anchor_iso.replace('Z', '+00:00')).timestamp())
+    except ValueError:
+        pass
+
+anchor = datetime.datetime.fromtimestamp(anchor_epoch)
+epoch  = None
 
 reset_clean = re.sub(r'\s+', ' ', reset_str).strip()
 
@@ -213,8 +244,8 @@ for fmt in ('%b %d, %Y %I:%M%p', '%b %d %Y %I:%M%p'):
 if epoch is None:
     for fmt in ('%b %d, %I:%M%p', '%b %d %I:%M%p'):
         try:
-            t = datetime.datetime.strptime(f"{now.year} {reset_clean}", f"%Y {fmt}")
-            if int(t.timestamp()) <= int(time.time()):
+            t = datetime.datetime.strptime(f"{anchor.year} {reset_clean}", f"%Y {fmt}")
+            if int(t.timestamp()) <= anchor_epoch:
                 t = t.replace(year=t.year + 1)
             epoch = int(t.timestamp())
             break
@@ -225,8 +256,8 @@ if epoch is None:
     for fmt in ('%I:%M%p', '%I:%M %p'):
         try:
             t = datetime.datetime.strptime(reset_clean, fmt)
-            t = now.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
-            if int(t.timestamp()) <= int(time.time()):
+            t = anchor.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+            if int(t.timestamp()) <= anchor_epoch:
                 t += datetime.timedelta(days=1)
             epoch = int(t.timestamp())
             break
@@ -236,9 +267,8 @@ if epoch is None:
 if epoch is None:
     sys.exit(1)
 
-now_epoch = int(time.time())
 if epoch <= now_epoch:
-    sys.exit(1)      # full date in the past — bail
+    sys.exit(1)      # reset moment already passed — the limit has reset, nothing to wait for
 
 print(epoch)
 EOF
@@ -319,7 +349,7 @@ _rl_watcher() {
     current=$(wc -l < "$session_file" 2>/dev/null | tr -d ' ' || echo 0)
     if (( current > baseline )); then
       if tail -n "+$(( baseline + 1 ))" "$session_file" 2>/dev/null \
-          | grep -qi 'resets .*('; then
+          | grep -qiE '(^|[^[:alnum:]])resets [^(]*[0-9]+:[0-9][0-9][^(]*\('; then
         sleep 0.3   # let claude finish writing the entry
         kill -INT "$claude_pid" 2>/dev/null
         return
@@ -446,10 +476,18 @@ main() {
       reset_info=$(get_reset_info "$session_file" "$start_line")
       [[ -z "$reset_info" ]] && break
 
+      # get_reset_info prints "TIME TZ" plus, when available, the entry's own
+      # ISO timestamp on a second line (anchors stale-entry detection: a
+      # "resets 6:20pm" whose moment already passed means the limit has reset
+      # — parse_reset_epoch fails and we exit instead of waiting ~24 h).
+      local reset_anchor=''
+      reset_anchor=$(printf '%s\n' "$reset_info" | sed -n '2p')
+      reset_info=$(printf '%s\n' "$reset_info" | sed -n '1p')
+
       local reset_time='' reset_tz=''
       reset_tz=${reset_info##* }
       reset_time=${reset_info%" $reset_tz"}
-      reset_epoch=$(parse_reset_epoch "$reset_time" "$reset_tz") || break
+      reset_epoch=$(parse_reset_epoch "$reset_time" "$reset_tz" "$reset_anchor") || break
     fi
 
     local wake_epoch=$(( reset_epoch + BUFFER_SECS ))

@@ -246,6 +246,22 @@ f=$(mkjsonl "26-nested.jsonl" \
 r=$(get_reset_info "$f")
 [[ "$r" == "8:00pm UTC" ]] && pass "RL inside nested result field → extracted" || fail "RL in result field" "$r"
 
+# 26b. Entry timestamp emitted as second line (anchors stale-entry detection)
+f=$(mkjsonl "26b-anchored.jsonl" \
+  '{"timestamp":"2026-06-11T11:23:52.000Z","type":"error","error":{"message":"You'\''ve hit your session limit · resets 6:20pm (Europe/Oslo)"}}')
+r=$(get_reset_info "$f")
+expected=$'6:20pm Europe/Oslo\n2026-06-11T11:23:52.000Z'
+[[ "$r" == "$expected" ]] && pass "entry timestamp → emitted as second line" \
+  || fail "entry timestamp second line" "$r"
+
+# 26c. Code content stored in JSONL must NOT match ("presets …(", "resets the device (")
+f=$(mkjsonl "26c-false-pos.jsonl" \
+  '{"timestamp":"2026-06-11T11:23:52.000Z","content":"Routine presets to customize (larger screens)"}' \
+  '{"timestamp":"2026-06-11T11:23:53.000Z","content":"Tap Delete (this factory resets the device)"}')
+r=$(get_reset_info "$f")
+[[ -z "$r" ]] && pass "code-content false positives → empty" \
+  || fail "code-content false positives → empty" "$r"
+
 # ============================================================================
 # SECTION 4 — Linux script: parse_reset_epoch
 # ============================================================================
@@ -309,6 +325,28 @@ if [[ "$r" =~ ^[0-9]+$ ]]; then
   pass "parse_reset_epoch output is a pure integer"
 else
   fail "parse_reset_epoch output is a pure integer" "'$r'"
+fi
+
+# 34b. Stale entry: anchored to a timestamp 6 h ago, the reset time has already
+# passed → exit 1 (the limit has reset; must NOT bump a day into the future).
+stale_anchor=$(date -u -d '6 hours ago' '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null)
+stale_time=$(TZ=UTC date -d '3 hours ago' '+%-I:%M%p' 2>/dev/null | tr 'A-Z' 'a-z')
+if [[ -n "$stale_anchor" && -n "$stale_time" ]]; then
+  parse_reset_epoch "$stale_time" "UTC" "$stale_anchor" > /dev/null 2>&1; rc=$?
+  (( rc != 0 )) && pass "stale anchored entry (reset already passed) → non-zero exit" \
+    || fail "stale anchored entry → non-zero exit" "rc=$rc"
+else
+  fail "stale anchored entry → non-zero exit" "could not build fixture (GNU date missing?)"
+fi
+
+# 34c. Fresh entry: anchored to now, reset 30 min ahead → valid future epoch
+fresh_anchor=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')
+fresh_time=$(TZ=UTC date -d '+30 minutes' '+%-I:%M%p' 2>/dev/null | tr 'A-Z' 'a-z')
+r=$(parse_reset_epoch "$fresh_time" "UTC" "$fresh_anchor" 2>/dev/null); rc=$?
+if (( rc == 0 )) && [[ -n "$r" ]] && (( r > now )); then
+  pass "fresh anchored entry → valid future epoch"
+else
+  fail "fresh anchored entry → valid future epoch" "rc=$rc epoch=$r"
 fi
 
 # ============================================================================
@@ -731,6 +769,42 @@ PY
   else
     skip "python3 not available — skipping macOS future date test"
   fi
+
+  # 74c. macOS parse_reset_epoch: stale anchored entry → exit 1.
+  # Anchored to a timestamp 6 h ago, a "resets <3 h ago>" time has already
+  # passed → the limit has reset; must NOT bump a day into the future
+  # (regression: normal exit after an earlier RL period triggered a ~24 h wait).
+  if command -v python3 &>/dev/null; then
+    stale_anchor=$(date -u -v-6H '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null \
+      || date -u -d '6 hours ago' '+%Y-%m-%dT%H:%M:%S.000Z')
+    stale_time=$(TZ=UTC python3 - <<'PY'
+import datetime
+t = datetime.datetime.now() - datetime.timedelta(hours=3)
+print(t.strftime('%I:%M%p').lower().lstrip('0'))
+PY
+)
+    parse_reset_epoch "$stale_time" "UTC" "$stale_anchor" > /dev/null 2>&1; rc=$?
+    (( rc != 0 )) && pass "macOS parse_reset_epoch: stale anchored entry → exit 1" \
+      || fail "macOS parse_reset_epoch: stale anchored entry → exit 1" "rc=$rc"
+  else
+    skip "python3 not available — skipping macOS stale anchor test"
+  fi
+
+  # 74d. macOS get_reset_info: entry timestamp emitted as second line
+  f=$(mkjsonl "74d-mac-anchored.jsonl" \
+    '{"timestamp":"2026-06-11T11:23:52.000Z","type":"error","error":{"message":"You'\''ve hit your session limit · resets 6:20pm (Europe/Oslo)"}}')
+  r=$(get_reset_info "$f")
+  expected=$'6:20pm Europe/Oslo\n2026-06-11T11:23:52.000Z'
+  [[ "$r" == "$expected" ]] && pass "macOS get_reset_info: timestamp → second line" \
+    || fail "macOS get_reset_info: timestamp second line" "$r"
+
+  # 74e. macOS get_reset_info: code content must NOT match
+  f=$(mkjsonl "74e-mac-false-pos.jsonl" \
+    '{"timestamp":"2026-06-11T11:23:52.000Z","content":"Routine presets to customize (larger screens)"}' \
+    '{"timestamp":"2026-06-11T11:23:53.000Z","content":"Tap Delete (this factory resets the device)"}')
+  r=$(get_reset_info "$f")
+  [[ -z "$r" ]] && pass "macOS get_reset_info: code-content false positives → empty" \
+    || fail "macOS get_reset_info: false positives → empty" "$r"
 
   # 75. macOS find_latest_session (ls -t): CWD-matching file returned
   mkdir -p "$PROJECTS_DIR"
