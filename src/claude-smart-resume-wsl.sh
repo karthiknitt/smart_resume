@@ -141,9 +141,14 @@ _should_add_skip_permissions() {
 
 # ---------------------------------------------------------------------------
 find_latest_session() {
-  local encoded_cwd
-  encoded_cwd=$(pwd | sed 's|/|-|g; s|^-||')
-  local session_dir="${PROJECTS_DIR}/${encoded_cwd}"
+  local encoded_cwd legacy_encoded_cwd session_dir
+  # Claude stores project dirs as the absolute cwd with "/" replaced by "-",
+  # including the leading slash (e.g. /mnt/c/app -> -mnt-c-app).
+  encoded_cwd=$(pwd | sed 's|/|-|g')
+  legacy_encoded_cwd=${encoded_cwd#-}
+  session_dir="${PROJECTS_DIR}/${encoded_cwd}"
+  [[ ! -d "$session_dir" && -n "$legacy_encoded_cwd" && "$legacy_encoded_cwd" != "$encoded_cwd" ]] \
+    && session_dir="${PROJECTS_DIR}/${legacy_encoded_cwd}"
   if [[ -d "$session_dir" ]]; then
     find "$session_dir" -maxdepth 1 -name "*.jsonl" -type f \
       -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-

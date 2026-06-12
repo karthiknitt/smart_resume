@@ -260,6 +260,14 @@ r=$(get_reset_info "$f")
 [[ "$r" == "7:30 pm UTC" ]] && pass "spaced meridiem reset time → detected" \
   || fail "spaced meridiem reset time" "$r"
 
+# 26a-3. Weekly limit wording with midnight reset — real-world Claude CLI case
+f=$(mkjsonl "26a3-weekly-midnight.jsonl" \
+  '{"timestamp":"2026-06-12T15:56:14.026Z","type":"assistant","message":{"content":[{"type":"text","text":"You'\''ve hit your weekly limit · resets 12am (Europe/Oslo)"}]},"error":"rate_limit","apiErrorStatus":429}')
+r=$(get_reset_info "$f")
+expected=$'12am Europe/Oslo\n2026-06-12T15:56:14.026Z'
+[[ "$r" == "$expected" ]] && pass "weekly limit at 12am → detected with timestamp" \
+  || fail "weekly limit at 12am" "$r"
+
 # 26b. Entry timestamp emitted as second line (anchors stale-entry detection)
 f=$(mkjsonl "26b-anchored.jsonl" \
   '{"timestamp":"2026-06-11T11:23:52.000Z","type":"error","error":{"message":"You'\''ve hit your session limit · resets 6:20pm (Europe/Oslo)"}}')
@@ -439,7 +447,7 @@ r=$(find_latest_session 2>/dev/null)
 [[ -z "$r" ]] && pass "empty projects dir → empty" || fail "empty projects dir → empty" "$r"
 
 # 41. CWD-matching dir with one file → returns it
-encoded_cwd=$(pwd | sed 's|/|-|g; s|^-||')
+encoded_cwd=$(pwd | sed 's|/|-|g')
 mkdir -p "$PROJECTS_DIR/$encoded_cwd"
 f1="$PROJECTS_DIR/$encoded_cwd/uuid-aaa.jsonl"
 touch "$f1"
@@ -452,6 +460,15 @@ f2="$PROJECTS_DIR/$encoded_cwd/uuid-bbb.jsonl"
 touch "$f2"
 r=$(find_latest_session 2>/dev/null)
 [[ "$r" == "$f2" ]] && pass "CWD dir, multiple files → most recent returned" || fail "CWD dir, most recent" "$r"
+
+# 42a. CWD project dir must beat a newer unrelated project file
+sleep 0.05
+mkdir -p "$PROJECTS_DIR/unrelated-project"
+other="$PROJECTS_DIR/unrelated-project/uuid-other.jsonl"
+touch "$other"
+r=$(find_latest_session 2>/dev/null)
+[[ "$r" == "$f2" ]] && pass "CWD dir beats newer unrelated project file" \
+  || fail "CWD dir beats newer unrelated" "$r"
 
 # 43. CWD dir absent → falls back to global most-recent
 PROJECTS_DIR="$TESTDIR/projects2"
@@ -704,10 +721,13 @@ else
   # 67. WSL find_latest_session: CWD-matching file returned (uses find -printf)
   PROJECTS_DIR="$TESTDIR/projects-wsl"
   mkdir -p "$PROJECTS_DIR"
-  enc=$(pwd | sed 's|/|-|g; s|^-||')
+  enc=$(pwd | sed 's|/|-|g')
   mkdir -p "$PROJECTS_DIR/$enc"
   wsl_f="$PROJECTS_DIR/$enc/wsl-session.jsonl"
   touch "$wsl_f"
+  sleep 0.05
+  mkdir -p "$PROJECTS_DIR/other-wsl"
+  touch "$PROJECTS_DIR/other-wsl/newer-wsl-session.jsonl"
   r=$(find_latest_session 2>/dev/null)
   [[ "$r" == "$wsl_f" ]] && pass "WSL find_latest_session: CWD match → file returned" \
     || fail "WSL find_latest_session" "$r"
@@ -841,6 +861,14 @@ PY
   [[ "$r" == "3pm Europe/Dublin" ]] && pass "macOS get_reset_info: hour-only reset time → detected" \
     || fail "macOS get_reset_info: hour-only reset time" "$r"
 
+  # 74b-3. macOS get_reset_info: weekly limit wording with midnight reset
+  f=$(mkjsonl "74b3-mac-weekly-midnight.jsonl" \
+    '{"timestamp":"2026-06-12T15:56:14.026Z","type":"assistant","message":{"content":[{"type":"text","text":"You'\''ve hit your weekly limit · resets 12am (Europe/Oslo)"}]},"error":"rate_limit","apiErrorStatus":429}')
+  r=$(get_reset_info "$f")
+  expected=$'12am Europe/Oslo\n2026-06-12T15:56:14.026Z'
+  [[ "$r" == "$expected" ]] && pass "macOS get_reset_info: weekly 12am → detected" \
+    || fail "macOS get_reset_info: weekly 12am" "$r"
+
   # 74c. macOS parse_reset_epoch: stale anchored entry → exit 1.
   # Anchored to a timestamp 6 h ago, a "resets <3 h ago>" time has already
   # passed → the limit has reset; must NOT bump a day into the future
@@ -879,7 +907,7 @@ PY
 
   # 75. macOS find_latest_session (ls -t): CWD-matching file returned
   mkdir -p "$PROJECTS_DIR"
-  enc=$(pwd | sed 's|/|-|g; s|^-||')
+  enc=$(pwd | sed 's|/|-|g')
   mkdir -p "$PROJECTS_DIR/$enc"
   mac_f="$PROJECTS_DIR/$enc/mac-session.jsonl"
   touch "$mac_f"
@@ -894,6 +922,14 @@ PY
   r=$(find_latest_session 2>/dev/null)
   [[ "$r" == "$mac_f2" ]] && pass "macOS find_latest_session (ls -t): newer file wins" \
     || fail "macOS find_latest_session: newer file wins" "$r"
+
+  # 76a. macOS find_latest_session: CWD project beats newer unrelated file
+  sleep 0.05
+  mkdir -p "$PROJECTS_DIR/other-mac"
+  touch "$PROJECTS_DIR/other-mac/newer-mac-session.jsonl"
+  r=$(find_latest_session 2>/dev/null)
+  [[ "$r" == "$mac_f2" ]] && pass "macOS find_latest_session: CWD beats unrelated newer file" \
+    || fail "macOS find_latest_session: CWD beats unrelated" "$r"
 
   PROJECTS_DIR="$TESTDIR/projects"
 fi

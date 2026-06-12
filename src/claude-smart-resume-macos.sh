@@ -125,9 +125,14 @@ _should_add_skip_permissions() {
 # BSD-compatible: sort by mtime using ls -t
 # ---------------------------------------------------------------------------
 find_latest_session() {
-  local encoded_cwd
-  encoded_cwd=$(pwd | sed 's|/|-|g; s|^-||')
-  local session_dir="${PROJECTS_DIR}/${encoded_cwd}"
+  local encoded_cwd legacy_encoded_cwd session_dir
+  # Claude stores project dirs as the absolute cwd with "/" replaced by "-",
+  # including the leading slash (e.g. /Users/me/app -> -Users-me-app).
+  encoded_cwd=$(pwd | sed 's|/|-|g')
+  legacy_encoded_cwd=${encoded_cwd#-}
+  session_dir="${PROJECTS_DIR}/${encoded_cwd}"
+  [[ ! -d "$session_dir" && -n "$legacy_encoded_cwd" && "$legacy_encoded_cwd" != "$encoded_cwd" ]] \
+    && session_dir="${PROJECTS_DIR}/${legacy_encoded_cwd}"
 
   if [[ -d "$session_dir" ]]; then
     # shellcheck disable=SC2012  # ls -t needed for mtime sort; BSD find lacks -printf
