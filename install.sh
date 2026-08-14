@@ -134,18 +134,76 @@ detect_claude_bin() {
   step "Detecting Claude Code binary path..."
   info "Detected platform: $(_bold "$PLATFORM_LABEL")"
 
-  # If we're running inside the wrapper alias, `which claude` would return the
-  # wrapper itself. Use `command -v` on the real binary via PATH lookup only.
-  local bin
-  bin=$(command -v claude 2>/dev/null || true)
+  # Shell integrations can define `claude` as an alias/function. In zsh,
+  # `command -v claude` returns the function name; in bash it can print a
+  # function body. Prefer executable-only lookup and reject known wrappers.
+  local bin=""
 
-  # Reject the wrapper itself — it lives in ~/.claude/
-  if [[ "$bin" == "${CLAUDE_DIR}/${WRAPPER_NAME}" ]]; then
-    # Try to find the real binary by looking at PATH entries
-    bin=$(IFS=:; for d in $PATH; do
+  is_usable_claude_bin() {
+    local candidate="$1"
+    [[ -n "$candidate" && -x "$candidate" ]] || return 1
+
+    if [[ "$candidate" == "${CLAUDE_DIR}/${WRAPPER_NAME}" ]]; then
+      return 1
+    fi
+
+    if [[ -e "${CLAUDE_DIR}/${WRAPPER_NAME}" \
+          && "$candidate" -ef "${CLAUDE_DIR}/${WRAPPER_NAME}" ]]; then
+      return 1
+    fi
+
+    if [[ -n "${_CMUX_CLAUDE_WRAPPER:-}" && -e "${_CMUX_CLAUDE_WRAPPER}" \
+          && "$candidate" -ef "${_CMUX_CLAUDE_WRAPPER}" ]]; then
+      return 1
+    fi
+
+    case "$candidate" in
+      */cmux.app/Contents/Resources/bin/claude)
+        return 1
+        ;;
+    esac
+
+    return 0
+  }
+
+  if [[ -n "${SHELL:-}" && -x "${SHELL}" ]]; then
+    case "${SHELL##*/}" in
+      zsh)
+        bin=$("${SHELL}" -c 'whence -p claude 2>/dev/null' 2>/dev/null || true)
+        ;;
+      bash)
+        bin=$("${SHELL}" -c 'type -P claude 2>/dev/null' 2>/dev/null || true)
+        ;;
+      *)
+        bin=$("${SHELL}" -c 'command -v claude 2>/dev/null' 2>/dev/null || true)
+        ;;
+    esac
+    is_usable_claude_bin "$bin" || bin=""
+  fi
+
+  if [[ -z "$bin" ]]; then
+    bin=$(type -P claude 2>/dev/null || true)
+    is_usable_claude_bin "$bin" || bin=""
+  fi
+
+  if [[ -z "$bin" ]]; then
+    local candidate
+    candidate=$(command -v claude 2>/dev/null || true)
+    if [[ "$candidate" == */* ]] && is_usable_claude_bin "$candidate"; then
+      bin="$candidate"
+    fi
+  fi
+
+  if [[ -z "$bin" ]]; then
+    local d
+    local IFS=:
+    for d in $PATH; do
       [[ "$d" == "$CLAUDE_DIR" ]] && continue
-      [[ -x "$d/claude" ]] && echo "$d/claude" && break
-    done)
+      if is_usable_claude_bin "$d/claude"; then
+        bin="$d/claude"
+        break
+      fi
+    done
   fi
 
   if [[ -z "$bin" || ! -x "$bin" ]]; then
@@ -187,9 +245,27 @@ patch_claude_bin() {
   step "Patching CLAUDE_BIN in wrapper..."
 
   local target="${CLAUDE_DIR}/${WRAPPER_NAME}"
+  local tmp
+  tmp=$(mktemp)
 
   # Replace the CLAUDE_BIN=... line in the installed script
-  sed -i "s|^CLAUDE_BIN=.*|CLAUDE_BIN=\"${CLAUDE_BIN}\"|" "$target"
+  if awk -v bin="$CLAUDE_BIN" '
+    BEGIN { replaced = 0 }
+    /^CLAUDE_BIN=/ {
+      replaced++
+      print "CLAUDE_BIN=\"" bin "\""
+      next
+    }
+    { print }
+    END { exit(replaced == 1 ? 0 : 1) }
+  ' "$target" > "$tmp"; then
+    mv "$tmp" "$target"
+  else
+    rm -f "$tmp"
+    err "Expected exactly one CLAUDE_BIN assignment in $target."
+    exit 1
+  fi
+  chmod +x "$target"
 
   ok "CLAUDE_BIN set to: $(_bold "$CLAUDE_BIN")"
 }

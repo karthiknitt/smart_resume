@@ -46,12 +46,13 @@ mkjsonl() {
 
 # ---------------------------------------------------------------------------
 # Helper: source just the function definitions from a wrapper script.
-# Stops before "resume_id=" which starts the main loop.
+# Stops before the final main invocation so tests source functions without
+# launching a real Claude session.
 # ---------------------------------------------------------------------------
 source_functions() {
   local script="$1"
   CLAUDE_BIN="/bin/true"
-  source <(awk '/^resume_id=/{exit} {print}' "$script") 2>/dev/null \
+  source <(awk '/^[[:space:]]*main[[:space:]]+"\$@"([[:space:]]*#.*)?[[:space:]]*$/{exit} {print}' "$script") 2>/dev/null \
     || { printf "${RED}ERROR${RST}: could not source %s\n" "$script"; return 1; }
 }
 
@@ -245,6 +246,44 @@ f=$(mkjsonl "26-nested.jsonl" \
 r=$(get_reset_info "$f")
 [[ "$r" == "8:00pm UTC" ]] && pass "RL inside nested result field → extracted" || fail "RL in result field" "$r"
 
+# 26a-1. Hour-only reset time ("3pm") — no minutes, still detected
+f=$(mkjsonl "26a1-hour-only.jsonl" \
+  '{"type":"error","error":{"message":"You'\''ve hit your session limit · resets 3pm (Europe/Dublin)"}}')
+r=$(get_reset_info "$f")
+[[ "$r" == "3pm Europe/Dublin" ]] && pass "hour-only reset time → detected" \
+  || fail "hour-only reset time" "$r"
+
+# 26a-2. Spaced meridiem ("7:30 pm") — still detected
+f=$(mkjsonl "26a2-spaced.jsonl" \
+  '{"type":"error","error":{"message":"resets 7:30 pm (UTC)"}}')
+r=$(get_reset_info "$f")
+[[ "$r" == "7:30 pm UTC" ]] && pass "spaced meridiem reset time → detected" \
+  || fail "spaced meridiem reset time" "$r"
+
+# 26a-3. Weekly limit wording with midnight reset — real-world Claude CLI case
+f=$(mkjsonl "26a3-weekly-midnight.jsonl" \
+  '{"timestamp":"2026-06-12T15:56:14.026Z","type":"assistant","message":{"content":[{"type":"text","text":"You'\''ve hit your weekly limit · resets 12am (Europe/Oslo)"}]},"error":"rate_limit","apiErrorStatus":429}')
+r=$(get_reset_info "$f")
+expected=$'12am Europe/Oslo\n2026-06-12T15:56:14.026Z'
+[[ "$r" == "$expected" ]] && pass "weekly limit at 12am → detected with timestamp" \
+  || fail "weekly limit at 12am" "$r"
+
+# 26b. Entry timestamp emitted as second line (anchors stale-entry detection)
+f=$(mkjsonl "26b-anchored.jsonl" \
+  '{"timestamp":"2026-06-11T11:23:52.000Z","type":"error","error":{"message":"You'\''ve hit your session limit · resets 6:20pm (Europe/Oslo)"}}')
+r=$(get_reset_info "$f")
+expected=$'6:20pm Europe/Oslo\n2026-06-11T11:23:52.000Z'
+[[ "$r" == "$expected" ]] && pass "entry timestamp → emitted as second line" \
+  || fail "entry timestamp second line" "$r"
+
+# 26c. Code content stored in JSONL must NOT match ("presets …(", "resets the device (")
+f=$(mkjsonl "26c-false-pos.jsonl" \
+  '{"timestamp":"2026-06-11T11:23:52.000Z","content":"Routine presets to customize (larger screens)"}' \
+  '{"timestamp":"2026-06-11T11:23:53.000Z","content":"Tap Delete (this factory resets the device)"}')
+r=$(get_reset_info "$f")
+[[ -z "$r" ]] && pass "code-content false positives → empty" \
+  || fail "code-content false positives → empty" "$r"
+
 # ============================================================================
 # SECTION 4 — Linux script: parse_reset_epoch
 # ============================================================================
@@ -310,6 +349,59 @@ else
   fail "parse_reset_epoch output is a pure integer" "'$r'"
 fi
 
+# 34b. Stale entry: anchored to a timestamp 6 h ago, the reset time has already
+# passed → exit 1 (the limit has reset; must NOT bump a day into the future).
+stale_anchor=$(date -u -d '6 hours ago' '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null)
+stale_time=$(TZ=UTC date -d '3 hours ago' '+%-I:%M%p' 2>/dev/null | tr 'A-Z' 'a-z')
+if [[ -n "$stale_anchor" && -n "$stale_time" ]]; then
+  parse_reset_epoch "$stale_time" "UTC" "$stale_anchor" > /dev/null 2>&1; rc=$?
+  (( rc != 0 )) && pass "stale anchored entry (reset already passed) → non-zero exit" \
+    || fail "stale anchored entry → non-zero exit" "rc=$rc"
+else
+  fail "stale anchored entry → non-zero exit" "could not build fixture (GNU date missing?)"
+fi
+
+# 34c. Fresh entry: anchored to now, reset 30 min ahead → valid future epoch
+fresh_anchor=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')
+fresh_time=$(TZ=UTC date -d '+30 minutes' '+%-I:%M%p' 2>/dev/null | tr 'A-Z' 'a-z')
+if [[ -n "$fresh_anchor" && -n "$fresh_time" ]]; then
+  r=$(parse_reset_epoch "$fresh_time" "UTC" "$fresh_anchor" 2>/dev/null); rc=$?
+  if (( rc == 0 )) && [[ -n "$r" ]] && (( r > now )); then
+    pass "fresh anchored entry → valid future epoch"
+  else
+    fail "fresh anchored entry → valid future epoch" "rc=$rc epoch=$r"
+  fi
+else
+  fail "fresh anchored entry → valid future epoch" "could not build fixture (GNU date missing?)"
+fi
+
+# 34e. Hour-only ("11pm") and spaced meridiem ("11:59 pm") parse as time-only
+r=$(parse_reset_epoch "11pm" "UTC" 2>/dev/null); rc=$?
+if (( rc == 0 )) && [[ -n "$r" ]] && (( r > now )); then
+  pass "hour-only time → valid future epoch"
+else
+  fail "hour-only time → valid future epoch" "rc=$rc epoch=$r"
+fi
+r=$(parse_reset_epoch "11:59 pm" "UTC" 2>/dev/null); rc=$?
+if (( rc == 0 )) && [[ -n "$r" ]] && (( r > now )); then
+  pass "spaced meridiem time → valid future epoch"
+else
+  fail "spaced meridiem time → valid future epoch" "rc=$rc epoch=$r"
+fi
+
+# 34d. Month/day without year → anchored to the entry's year, not the current
+# year. A stale entry from 2020 mentioning tomorrow's month/day must resolve
+# to 2020 (past → rejected); GNU date alone would assume the current year and
+# produce a bogus future reset (regression: months-long countdown).
+yd_time=$(date -u -d tomorrow '+%b %d' 2>/dev/null)
+if [[ -n "$yd_time" ]]; then
+  r=$(parse_reset_epoch "$yd_time 11:55pm" "UTC" "2020-01-01T00:00:00.000Z" 2>/dev/null); rc=$?
+  (( rc != 0 )) && pass "yearless month/day anchored to entry year → stale entry rejected" \
+    || fail "yearless month/day anchored to entry year" "rc=$rc epoch=$r (expected non-zero: ${yd_time} 2020 is long past)"
+else
+  fail "yearless month/day anchored to entry year" "could not build fixture (GNU date missing?)"
+fi
+
 # ============================================================================
 # SECTION 5 — Linux script: generate_name
 # ============================================================================
@@ -355,7 +447,7 @@ r=$(find_latest_session 2>/dev/null)
 [[ -z "$r" ]] && pass "empty projects dir → empty" || fail "empty projects dir → empty" "$r"
 
 # 41. CWD-matching dir with one file → returns it
-encoded_cwd=$(pwd | sed 's|/|-|g; s|^-||')
+encoded_cwd=$(pwd | sed 's|/|-|g')
 mkdir -p "$PROJECTS_DIR/$encoded_cwd"
 f1="$PROJECTS_DIR/$encoded_cwd/uuid-aaa.jsonl"
 touch "$f1"
@@ -368,6 +460,15 @@ f2="$PROJECTS_DIR/$encoded_cwd/uuid-bbb.jsonl"
 touch "$f2"
 r=$(find_latest_session 2>/dev/null)
 [[ "$r" == "$f2" ]] && pass "CWD dir, multiple files → most recent returned" || fail "CWD dir, most recent" "$r"
+
+# 42a. CWD project dir must beat a newer unrelated project file
+sleep 0.05
+mkdir -p "$PROJECTS_DIR/unrelated-project"
+other="$PROJECTS_DIR/unrelated-project/uuid-other.jsonl"
+touch "$other"
+r=$(find_latest_session 2>/dev/null)
+[[ "$r" == "$f2" ]] && pass "CWD dir beats newer unrelated project file" \
+  || fail "CWD dir beats newer unrelated" "$r"
 
 # 43. CWD dir absent → falls back to global most-recent
 PROJECTS_DIR="$TESTDIR/projects2"
@@ -620,10 +721,13 @@ else
   # 67. WSL find_latest_session: CWD-matching file returned (uses find -printf)
   PROJECTS_DIR="$TESTDIR/projects-wsl"
   mkdir -p "$PROJECTS_DIR"
-  enc=$(pwd | sed 's|/|-|g; s|^-||')
+  enc=$(pwd | sed 's|/|-|g')
   mkdir -p "$PROJECTS_DIR/$enc"
   wsl_f="$PROJECTS_DIR/$enc/wsl-session.jsonl"
   touch "$wsl_f"
+  sleep 0.05
+  mkdir -p "$PROJECTS_DIR/other-wsl"
+  touch "$PROJECTS_DIR/other-wsl/newer-wsl-session.jsonl"
   r=$(find_latest_session 2>/dev/null)
   [[ "$r" == "$wsl_f" ]] && pass "WSL find_latest_session: CWD match → file returned" \
     || fail "WSL find_latest_session" "$r"
@@ -668,37 +772,48 @@ else
   [[ "$r" == "mac-session" ]] && pass "macOS get_session_name (sed -E): correct name" \
     || fail "macOS get_session_name" "$r"
 
-  # 72. macOS parse_reset_epoch (python3): time-only string
-  # KNOWN LIMITATION: Python3 strptime("%Y %I:%M%p") defaults month/day to Jan 1,
-  # not today. So "11:59pm" resolves to Jan 1 <year> 11:59pm. The +86400 rollover
-  # only adds one day — if it's past January the result is still months in the past.
-  # GNU date -d "11:59pm" correctly means *today* at that time. This divergence is
-  # intentional on real macOS where RL messages always include full dates.
+  # 72. macOS parse_reset_epoch (python3): time-only future resolves today
   if command -v python3 &>/dev/null; then
-    r=$(parse_reset_epoch "11:59pm" "UTC" 2>/dev/null); rc=$?
-    if (( rc == 0 )) && [[ "$r" =~ ^[0-9]+$ ]]; then
-      warn "macOS parse_reset_epoch (python3): time-only returns epoch $r (may be past — Jan-1 default; known macOS limitation)"
+    future_pair=$(TZ=UTC python3 - <<'PY'
+import datetime
+t = datetime.datetime.now() + datetime.timedelta(minutes=5)
+print(t.strftime('%I:%M%p').lower().lstrip('0'), int(t.timestamp()))
+PY
+)
+    read -r future_time future_epoch <<< "$future_pair"
+    r=$(parse_reset_epoch "$future_time" "UTC" 2>/dev/null); rc=$?
+    if (( rc == 0 )) && [[ "$r" =~ ^[0-9]+$ ]] && (( r >= future_epoch - 60 && r <= future_epoch + 60 )); then
+      pass "macOS parse_reset_epoch (python3): time-only future resolves today"
     else
-      fail "macOS parse_reset_epoch (python3): time-only should return integer epoch" "rc=$rc r=$r"
+      fail "macOS parse_reset_epoch (python3): time-only future resolves today" "rc=$rc r=$r expected≈$future_epoch"
     fi
   else
     skip "python3 not available — skipping macOS parse_reset_epoch test"
   fi
 
-  # 73. macOS parse_reset_epoch (python3): past time — same Jan-1 limitation applies
+  # 73. macOS parse_reset_epoch (python3): time-only past rolls to tomorrow
   if command -v python3 &>/dev/null; then
-    r=$(parse_reset_epoch "12:01am" "UTC" 2>/dev/null); rc=$?
-    if (( rc == 0 )) && [[ "$r" =~ ^[0-9]+$ ]]; then
-      warn "macOS parse_reset_epoch (python3): 12:01am returns epoch $r (Jan-1 default; known macOS limitation)"
+    past_pair=$(TZ=UTC python3 - <<'PY'
+import datetime
+t = datetime.datetime.now() - datetime.timedelta(minutes=5)
+print(t.strftime('%I:%M%p').lower().lstrip('0'), int(t.timestamp()))
+PY
+)
+    read -r past_time past_epoch <<< "$past_pair"
+    now_mac=$(date +%s)
+    r=$(parse_reset_epoch "$past_time" "UTC" 2>/dev/null); rc=$?
+    min_roll=$(( past_epoch + 86300 ))
+    max_roll=$(( past_epoch + 86500 ))
+    if (( rc == 0 )) && [[ "$r" =~ ^[0-9]+$ ]] && (( r > now_mac && r >= min_roll && r <= max_roll )); then
+      pass "macOS parse_reset_epoch (python3): time-only past rolls to tomorrow"
     else
-      fail "macOS parse_reset_epoch (python3): 12:01am should return integer epoch" "rc=$rc r=$r"
+      fail "macOS parse_reset_epoch (python3): time-only past rolls to tomorrow" "rc=$rc r=$r past=$past_epoch now=$now_mac"
     fi
   else
     skip "python3 not available — skipping macOS rollover test"
   fi
 
   # 74. macOS parse_reset_epoch (python3): full date in past → exit 1
-  # Full dates DO work correctly — the Jan-1 default only affects time-only strings
   if command -v python3 &>/dev/null; then
     parse_reset_epoch "Jan 1, 2020 12:00am" "UTC" > /dev/null 2>&1; rc=$?
     (( rc != 0 )) && pass "macOS parse_reset_epoch (python3): past full date → exit 1" \
@@ -720,9 +835,79 @@ else
     skip "python3 not available — skipping macOS future date test"
   fi
 
+  # 74b-1. macOS hour-only + spaced meridiem time-only forms
+  if command -v python3 &>/dev/null; then
+    now_mac=$(date +%s)
+    r=$(parse_reset_epoch "11pm" "UTC" 2>/dev/null); rc=$?
+    if (( rc == 0 )) && [[ -n "$r" ]] && (( r > now_mac )); then
+      pass "macOS parse_reset_epoch: hour-only time → valid future epoch"
+    else
+      fail "macOS parse_reset_epoch: hour-only time" "rc=$rc epoch=$r"
+    fi
+    r=$(parse_reset_epoch "11:59 pm" "UTC" 2>/dev/null); rc=$?
+    if (( rc == 0 )) && [[ -n "$r" ]] && (( r > now_mac )); then
+      pass "macOS parse_reset_epoch: spaced meridiem → valid future epoch"
+    else
+      fail "macOS parse_reset_epoch: spaced meridiem" "rc=$rc epoch=$r"
+    fi
+  else
+    skip "python3 not available — skipping macOS hour-only/spaced tests"
+  fi
+
+  # 74b-2. macOS get_reset_info: hour-only reset time detected
+  f=$(mkjsonl "74b2-mac-hour-only.jsonl" \
+    '{"type":"error","error":{"message":"You'\''ve hit your session limit · resets 3pm (Europe/Dublin)"}}')
+  r=$(get_reset_info "$f")
+  [[ "$r" == "3pm Europe/Dublin" ]] && pass "macOS get_reset_info: hour-only reset time → detected" \
+    || fail "macOS get_reset_info: hour-only reset time" "$r"
+
+  # 74b-3. macOS get_reset_info: weekly limit wording with midnight reset
+  f=$(mkjsonl "74b3-mac-weekly-midnight.jsonl" \
+    '{"timestamp":"2026-06-12T15:56:14.026Z","type":"assistant","message":{"content":[{"type":"text","text":"You'\''ve hit your weekly limit · resets 12am (Europe/Oslo)"}]},"error":"rate_limit","apiErrorStatus":429}')
+  r=$(get_reset_info "$f")
+  expected=$'12am Europe/Oslo\n2026-06-12T15:56:14.026Z'
+  [[ "$r" == "$expected" ]] && pass "macOS get_reset_info: weekly 12am → detected" \
+    || fail "macOS get_reset_info: weekly 12am" "$r"
+
+  # 74c. macOS parse_reset_epoch: stale anchored entry → exit 1.
+  # Anchored to a timestamp 6 h ago, a "resets <3 h ago>" time has already
+  # passed → the limit has reset; must NOT bump a day into the future
+  # (regression: normal exit after an earlier RL period triggered a ~24 h wait).
+  if command -v python3 &>/dev/null; then
+    stale_anchor=$(date -u -v-6H '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null \
+      || date -u -d '6 hours ago' '+%Y-%m-%dT%H:%M:%S.000Z')
+    stale_time=$(TZ=UTC python3 - <<'PY'
+import datetime
+t = datetime.datetime.now() - datetime.timedelta(hours=3)
+print(t.strftime('%I:%M%p').lower().lstrip('0'))
+PY
+)
+    parse_reset_epoch "$stale_time" "UTC" "$stale_anchor" > /dev/null 2>&1; rc=$?
+    (( rc != 0 )) && pass "macOS parse_reset_epoch: stale anchored entry → exit 1" \
+      || fail "macOS parse_reset_epoch: stale anchored entry → exit 1" "rc=$rc"
+  else
+    skip "python3 not available — skipping macOS stale anchor test"
+  fi
+
+  # 74d. macOS get_reset_info: entry timestamp emitted as second line
+  f=$(mkjsonl "74d-mac-anchored.jsonl" \
+    '{"timestamp":"2026-06-11T11:23:52.000Z","type":"error","error":{"message":"You'\''ve hit your session limit · resets 6:20pm (Europe/Oslo)"}}')
+  r=$(get_reset_info "$f")
+  expected=$'6:20pm Europe/Oslo\n2026-06-11T11:23:52.000Z'
+  [[ "$r" == "$expected" ]] && pass "macOS get_reset_info: timestamp → second line" \
+    || fail "macOS get_reset_info: timestamp second line" "$r"
+
+  # 74e. macOS get_reset_info: code content must NOT match
+  f=$(mkjsonl "74e-mac-false-pos.jsonl" \
+    '{"timestamp":"2026-06-11T11:23:52.000Z","content":"Routine presets to customize (larger screens)"}' \
+    '{"timestamp":"2026-06-11T11:23:53.000Z","content":"Tap Delete (this factory resets the device)"}')
+  r=$(get_reset_info "$f")
+  [[ -z "$r" ]] && pass "macOS get_reset_info: code-content false positives → empty" \
+    || fail "macOS get_reset_info: false positives → empty" "$r"
+
   # 75. macOS find_latest_session (ls -t): CWD-matching file returned
   mkdir -p "$PROJECTS_DIR"
-  enc=$(pwd | sed 's|/|-|g; s|^-||')
+  enc=$(pwd | sed 's|/|-|g')
   mkdir -p "$PROJECTS_DIR/$enc"
   mac_f="$PROJECTS_DIR/$enc/mac-session.jsonl"
   touch "$mac_f"
@@ -737,6 +922,14 @@ else
   r=$(find_latest_session 2>/dev/null)
   [[ "$r" == "$mac_f2" ]] && pass "macOS find_latest_session (ls -t): newer file wins" \
     || fail "macOS find_latest_session: newer file wins" "$r"
+
+  # 76a. macOS find_latest_session: CWD project beats newer unrelated file
+  sleep 0.05
+  mkdir -p "$PROJECTS_DIR/other-mac"
+  touch "$PROJECTS_DIR/other-mac/newer-mac-session.jsonl"
+  r=$(find_latest_session 2>/dev/null)
+  [[ "$r" == "$mac_f2" ]] && pass "macOS find_latest_session: CWD beats unrelated newer file" \
+    || fail "macOS find_latest_session: CWD beats unrelated" "$r"
 
   PROJECTS_DIR="$TESTDIR/projects"
 fi
@@ -812,7 +1005,7 @@ run_dep_check() {
 }
 
 # 77. All deps present (linux) → exits 0, reports "All dependencies present"
-out=$(run_dep_check "linux" zsh jq)
+out=$(run_dep_check "linux" jq)
 rc=$?
 if (( rc == 0 )) && echo "$out" | grep -qi 'dependencies present\|all.*present'; then
   pass "all deps present (linux) → exit 0, 'present' message"
@@ -820,17 +1013,17 @@ else
   fail "all deps present (linux) → exit 0" "rc=$rc output: $out"
 fi
 
-# 78. zsh missing → exits non-zero, lists zsh as missing
+# 78. zsh missing → still exits 0; wrappers run under bash or zsh
 out=$(run_dep_check "linux" jq)
 rc=$?
-if (( rc != 0 )) && echo "$out" | grep -q 'zsh'; then
-  pass "zsh missing → exit non-zero, lists zsh"
+if (( rc == 0 )) && ! echo "$out" | grep -q 'zsh'; then
+  pass "zsh missing → still allowed"
 else
-  fail "zsh missing → exit non-zero" "rc=$rc output: $out"
+  fail "zsh missing → should still be allowed" "rc=$rc output: $out"
 fi
 
 # 79. jq missing → exits non-zero, lists jq as missing
-out=$(run_dep_check "linux" zsh)
+out=$(run_dep_check "linux")
 rc=$?
 if (( rc != 0 )) && echo "$out" | grep -q 'jq'; then
   pass "jq missing → exit non-zero, lists jq"
@@ -838,17 +1031,17 @@ else
   fail "jq missing → exit non-zero" "rc=$rc output: $out"
 fi
 
-# 80. Both zsh and jq missing → exit non-zero, both listed
+# 80. Missing jq does not list zsh
 out=$(run_dep_check "linux")
 rc=$?
-if (( rc != 0 )) && echo "$out" | grep -q 'zsh' && echo "$out" | grep -q 'jq'; then
-  pass "both missing → exit non-zero, both listed"
+if (( rc != 0 )) && echo "$out" | grep -q 'jq' && ! echo "$out" | grep -q 'zsh'; then
+  pass "jq missing → zsh is not listed"
 else
-  fail "both missing → exit non-zero, both listed" "rc=$rc output: $out"
+  fail "jq missing → should not list zsh" "rc=$rc output: $out"
 fi
 
 # 81. Missing dep → install command suggested (apt-get stub present)
-out=$(run_dep_check "linux" zsh)
+out=$(run_dep_check "linux")
 if echo "$out" | grep -q 'apt-get\|install'; then
   pass "missing dep → install command suggested"
 else
@@ -856,7 +1049,7 @@ else
 fi
 
 # 82. Missing dep → script never executes sudo itself (no 'sudo' in output)
-out=$(run_dep_check "linux" zsh)
+out=$(run_dep_check "linux")
 if echo "$out" | grep -q '^sudo '; then
   fail "installer must not execute sudo — only print the command" "$out"
 else
@@ -864,7 +1057,7 @@ else
 fi
 
 # 83. macOS platform: python3 required → missing python3 listed
-out=$(run_dep_check "macos" zsh jq)
+out=$(run_dep_check "macos" jq)
 rc=$?
 if (( rc != 0 )) && echo "$out" | grep -q 'python3'; then
   pass "macOS: python3 missing → exit non-zero, lists python3"
@@ -873,7 +1066,7 @@ else
 fi
 
 # 84. macOS platform: all deps present → exit 0
-out=$(run_dep_check "macos" zsh jq python3)
+out=$(run_dep_check "macos" jq python3)
 rc=$?
 if (( rc == 0 )); then
   pass "macOS: all deps present → exit 0"
@@ -882,10 +1075,10 @@ else
 fi
 
 # 85. WSL platform (same as linux): no python3 required
-out=$(run_dep_check "wsl" zsh jq)
+out=$(run_dep_check "wsl" jq)
 rc=$?
 if (( rc == 0 )); then
-  pass "WSL: python3 not required → exit 0 with only zsh+jq"
+  pass "WSL: python3 not required → exit 0 with jq"
 else
   fail "WSL: python3 not required → exit 0" "rc=$rc output: $out"
 fi
@@ -930,6 +1123,77 @@ if [[ -f "$MACOS_SCRIPT" ]]; then
 else
   skip "macOS script not found — skipping macOS show_countdown test"
 fi
+
+# ============================================================================
+# SECTION 14 — Cross-script: skip-permissions argument handling
+# ============================================================================
+section "14 · Cross-script · skip-permissions argument handling"
+
+assert_skip_permission_decision() {
+  local script="$1" platform="$2" expected="$3" label="$4"
+  shift 4
+
+  source_functions "$script" 2>/dev/null || {
+    fail "${platform} ${label}" "could not source wrapper"
+    return
+  }
+
+  _should_add_skip_permissions "$@"
+  local rc=$?
+
+  case "$expected" in
+    add)
+      (( rc == 0 )) && pass "${platform} ${label} → add skip permissions" \
+        || fail "${platform} ${label} → should add skip permissions" "rc=$rc"
+      ;;
+    block)
+      (( rc != 0 )) && pass "${platform} ${label} → do not add skip permissions" \
+        || fail "${platform} ${label} → should not add skip permissions" "rc=$rc"
+      ;;
+  esac
+}
+
+run_skip_permission_tests() {
+  local script="$1" platform="$2"
+
+  if [[ ! -f "$script" ]]; then
+    skip "${platform} wrapper not found — skipping skip-permissions tests"
+    return
+  fi
+
+  # Auto-skip is for interactive sessions, not explicit modes or
+  # management commands.
+  assert_skip_permission_decision "$script" "$platform" add "plain prompt" "fix this bug"
+  assert_skip_permission_decision "$script" "$platform" add "resume command" --resume abc123
+  assert_skip_permission_decision "$script" "$platform" add "model option then prompt" --model sonnet -- "fix this"
+  assert_skip_permission_decision "$script" "$platform" block "help short" -h
+  assert_skip_permission_decision "$script" "$platform" block "help long" --help
+  assert_skip_permission_decision "$script" "$platform" block "version short" -v
+  assert_skip_permission_decision "$script" "$platform" block "version long" --version
+  assert_skip_permission_decision "$script" "$platform" block "dangerously-skip-permissions idempotent" --dangerously-skip-permissions
+  assert_skip_permission_decision "$script" "$platform" block "dangerously-skip-permissions repeated" --dangerously-skip-permissions --dangerously-skip-permissions
+  assert_skip_permission_decision "$script" "$platform" block "allow skip-permissions cycle flag" --allow-dangerously-skip-permissions
+  assert_skip_permission_decision "$script" "$platform" block "print mode" --print "status"
+  assert_skip_permission_decision "$script" "$platform" block "print mode after max turns" --max-turns 3 -p "status"
+  assert_skip_permission_decision "$script" "$platform" block "print mode after permission tool" --permission-prompt-tool mcp_auth_tool -p "status"
+  assert_skip_permission_decision "$script" "$platform" block "explicit permission mode" --permission-mode plan
+  assert_skip_permission_decision "$script" "$platform" block "explicit permission mode assignment" --permission-mode=auto
+  assert_skip_permission_decision "$script" "$platform" block "resume then explicit permission mode" --resume abc123 --permission-mode plan
+  assert_skip_permission_decision "$script" "$platform" block "background mode" --bg "investigate"
+  assert_skip_permission_decision "$script" "$platform" block "background mode assignment" --bg=investigate
+  assert_skip_permission_decision "$script" "$platform" block "remote web mode" --remote "fix login"
+  assert_skip_permission_decision "$script" "$platform" block "remote web mode assignment" --remote=fix-login
+  assert_skip_permission_decision "$script" "$platform" block "attach management command" attach abc123
+  assert_skip_permission_decision "$script" "$platform" block "logs management command" logs abc123
+  assert_skip_permission_decision "$script" "$platform" block "stop management command" stop abc123
+  assert_skip_permission_decision "$script" "$platform" block "kill management command" kill abc123
+  assert_skip_permission_decision "$script" "$platform" block "remove management command" rm abc123
+  assert_skip_permission_decision "$script" "$platform" block "respawn management command" respawn abc123
+}
+
+run_skip_permission_tests "$LINUX_SCRIPT" "Linux"
+run_skip_permission_tests "$WSL_SCRIPT" "WSL"
+run_skip_permission_tests "$MACOS_SCRIPT" "macOS"
 
 # ============================================================================
 # Summary

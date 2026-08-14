@@ -186,6 +186,14 @@ Find your `claude` binary (run this **before** adding the alias):
 which claude
 ```
 
+If your terminal defines `claude` as a shell function (for example cmux), use an
+executable-only lookup instead:
+
+```bash
+whence -p claude   # zsh
+type -P claude     # bash
+```
+
 Common locations:
 
 | Install method | Typical path |
@@ -291,7 +299,8 @@ chmod +x ~/.claude/claude-smart-resume-macos.sh
 Open the file and verify `CLAUDE_BIN` points to your `claude` binary:
 
 ```bash
-which claude   # find your path first
+whence -p claude   # zsh: find the executable path
+type -P claude     # bash: find the executable path
 ```
 
 Add to your `~/.zshrc` or `~/.bashrc`:
@@ -389,6 +398,22 @@ alias cc='claude'
 alias cca='claude --permission-mode auto'
 alias ccr='claude --resume'
 alias ccskip='claude --dangerously-skip-permissions'
+```
+
+To make Smart Resume add `--dangerously-skip-permissions` to every interactive
+Claude session, set:
+
+```bash
+export CLAUDE_SMART_RESUME_SKIP_PERMISSIONS=1
+```
+
+Use this only in trusted environments/projects. It bypasses Claude permission
+prompts for wrapper-invoked interactive sessions.
+
+For one-off usage, prefer a scoped invocation instead of a global export:
+
+```bash
+CLAUDE_SMART_RESUME_SKIP_PERMISSIONS=1 claude
 ```
 
 **One exception:** aliases using `env` or `command` bypass alias expansion:

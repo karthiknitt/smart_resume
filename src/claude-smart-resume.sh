@@ -31,11 +31,101 @@ _magenta() { printf '\e[35m%s\e[0m'   "$*" >&2; }
 _white()   { printf '\e[1;97m%s\e[0m' "$*" >&2; }
 _nl()      { printf '\n' >&2; }
 
+_is_truthy() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_claude_option_consumes_value() {
+  case "$1" in
+    --add-dir|--agent|--agents|--allowedTools|--allowed-tools|\
+    --advisor|--append-system-prompt|--append-system-prompt-file|\
+    --betas|--channels|--debug-file|--disallowedTools|\
+    --disallowed-tools|--effort|--fallback-model|--file|\
+    --input-format|--json-schema|--max-budget-usd|--max-turns|\
+    --mcp-config|--model|-m|-n|--name|--output-format|\
+    --permission-prompt-tool|--plugin-dir|--plugin-url|\
+    --remote-control-session-name-prefix|--setting-sources|\
+    --settings|--system-prompt|--system-prompt-file|\
+    --teammate-mode|--tools)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+_claude_builtin_command_name() {
+  case "$1" in
+    agents|attach|auth|auto-mode|config|api-key|daemon|doctor|install|kill|\
+    logs|mcp|\
+    experimental-next|plugin|plugins|project|rc|remote-control|setup-token|\
+    respawn|rm|stop|ultrareview|update|upgrade)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+_should_add_skip_permissions() {
+  local arg skip_next=0 first_non_option=1
+
+  for arg in "$@"; do
+    if (( skip_next )); then
+      skip_next=0
+      continue
+    fi
+
+    case "$arg" in
+      --dangerously-skip-permissions)
+        return 1
+        ;;
+      --help|-h|--version|-v|--print|--print=*|-p|\
+      --allow-dangerously-skip-permissions|--allow-dangerously-skip-permissions=*|\
+      --permission-mode|--permission-mode=*)
+        return 1
+        ;;
+      --bg|--bg=*|--remote|--remote=*)
+        return 1
+        ;;
+      --)
+        return 0
+        ;;
+      --resume|--resume=*|-r|--continue|-c|\
+      --session-id|--session-id=*|--remote-control|--remote-control=*|\
+      --from-pr|--from-pr=*|--worktree|--worktree=*|-w|-w=*)
+        continue
+        ;;
+      -*)
+        if [[ "$arg" != *=* ]] && _claude_option_consumes_value "$arg"; then
+          skip_next=1
+        fi
+        continue
+        ;;
+      *)
+        if (( first_non_option )); then
+          _claude_builtin_command_name "$arg" && return 1
+          first_non_option=0
+        fi
+        continue
+        ;;
+    esac
+  done
+
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 find_latest_session() {
-  local encoded_cwd
-  encoded_cwd=$(pwd | sed 's|/|-|g; s|^-||')
-  local session_dir="${PROJECTS_DIR}/${encoded_cwd}"
+  local encoded_cwd legacy_encoded_cwd session_dir
+  # Claude stores project dirs as the absolute cwd with "/" replaced by "-",
+  # including the leading slash (e.g. /Users/me/app -> -Users-me-app).
+  encoded_cwd=$(pwd | sed 's|/|-|g')
+  legacy_encoded_cwd=${encoded_cwd#-}
+  session_dir="${PROJECTS_DIR}/${encoded_cwd}"
+  [[ ! -d "$session_dir" && -n "$legacy_encoded_cwd" && "$legacy_encoded_cwd" != "$encoded_cwd" ]] \
+    && session_dir="${PROJECTS_DIR}/${legacy_encoded_cwd}"
   if [[ -d "$session_dir" ]]; then
     find "$session_dir" -maxdepth 1 -name "*.jsonl" -type f \
       -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-
@@ -50,15 +140,30 @@ get_reset_info() {
   local reset_line
   # Only scan lines written after start_line so a post-resume loop never
   # re-matches the old "resets …(" entry that is still in the JSONL.
+  # The pattern requires a standalone word "resets" plus a clock time before
+  # the "(timezone)" so code content stored in the JSONL ("presets … (",
+  # "factory resets the device (") never matches.
   reset_line=$(tail -n "+${start_line}" "$session_file" 2>/dev/null \
-    | grep -i 'resets .*(' | tail -1)
+    | grep -iE '(^|[^[:alnum:]])resets [^(]*[0-9]+(:[0-9][0-9]|[[:space:]]?[ap]m)[^(]*\(' | tail -1)
   [[ -z "$reset_line" ]] && return 0
-  local reset_time reset_tz
-  # Capture everything between "resets " and the opening paren — handles
-  # "7:30pm (tz)", "Apr 26 7:30pm (tz)", "Apr 26, 2026 7:30pm (tz)", etc.
-  reset_time=$(echo "$reset_line" | grep -oP '(?i)resets \K[^(]+' | sed 's/[[:space:]]*$//')
-  reset_tz=$(echo "$reset_line"   | grep -oP '\([^)]+\)' | tr -d '()')
-  [[ -n "$reset_time" && -n "$reset_tz" ]] && echo "${reset_time} ${reset_tz}" || true
+  local match reset_time reset_tz line_ts
+  # Capture "TIME (tz)" as one match so the timezone is tied to the "resets"
+  # occurrence — handles "7:30pm (tz)", "Apr 26 7:30pm (tz)",
+  # "Apr 26, 2026 7:30pm (tz)", etc. tail -1 keeps the last occurrence.
+  match=$(echo "$reset_line" \
+    | grep -oP '(?i)(?<![[:alnum:]])resets \K[^(]*[0-9]+(:[0-9][0-9]|\s?[ap]m)[^(]*\([^)]+\)' | tail -1)
+  [[ -z "$match" ]] && return 0
+  # sed (not ${match%%(*}) — zsh rejects "(" in parameter-expansion patterns
+  reset_time=$(echo "$match" | sed 's/ *(.*$//; s/[[:space:]]*$//')
+  reset_tz=$(echo "$match" | grep -oP '\(\K[^)]+')
+  # The entry's own timestamp anchors time-only strings like "6:20pm" to the
+  # day the message was written — not the day claude eventually exits.
+  line_ts=$(echo "$reset_line" | grep -oP '"timestamp":"\K[^"]+' | tail -1)
+  if [[ -n "$reset_time" && -n "$reset_tz" ]]; then
+    echo "${reset_time} ${reset_tz}"
+    [[ -n "$line_ts" ]] && echo "$line_ts"
+  fi
+  return 0
 }
 
 get_session_name() {
@@ -84,21 +189,42 @@ generate_name() {
 }
 
 parse_reset_epoch() {
-  local reset_time="$1" reset_tz="$2"
-  local reset_epoch now_epoch
-  # GNU date -d handles "7:30pm", "Apr 26 7:30pm", "Apr 26, 2026 7:30pm", etc.
-  reset_epoch=$(TZ="$reset_tz" date -d "$reset_time" +%s 2>/dev/null) || return 1
+  local reset_time="$1" reset_tz="$2" anchor_iso="${3:-}"
+  local reset_epoch now_epoch anchor_epoch
   now_epoch=$(date +%s)
-  # Only apply next-day rollover when the string was time-only (no date).
-  # A full date string ("Apr 26 7:30pm") already resolves to the correct future
-  # epoch — adding 86400 would overshoot by a day.
-  if (( reset_epoch <= now_epoch )); then
-    if [[ "${reset_time,,}" =~ ^[0-9]+:[0-9]+[apm]+$ ]]; then
-      reset_epoch=$(( reset_epoch + 86400 ))   # time-only: push to tomorrow
-    else
-      return 1   # full date already in past — something is wrong, bail out
+  # Anchor relative time strings to the moment the rate-limit entry was
+  # written (if known), NOT to claude's exit time. A stale "resets 6:20pm"
+  # from an earlier period must resolve to 6:20pm on ITS day — otherwise an
+  # already-passed reset gets bumped a full day into the future.
+  anchor_epoch=$now_epoch
+  if [[ -n "$anchor_iso" ]]; then
+    anchor_epoch=$(date -d "$anchor_iso" +%s 2>/dev/null) || anchor_epoch=$now_epoch
+  fi
+  if [[ "$reset_time" =~ ^([0-9]{1,2}:[0-9]{2}([[:space:]]?[AaPp][Mm])?|[0-9]{1,2}[[:space:]]?[AaPp][Mm])$ ]]; then
+    # Time-only ("6:20pm", "7:30 pm", "3pm", "18:20"): resolve on the anchor's
+    # calendar day in the reset TZ, rolling over to the next day if that time
+    # had already passed THEN.
+    local anchor_day
+    anchor_day=$(TZ="$reset_tz" date -d "@${anchor_epoch}" +%Y-%m-%d 2>/dev/null) || return 1
+    reset_epoch=$(TZ="$reset_tz" date -d "${anchor_day} ${reset_time}" +%s 2>/dev/null) || return 1
+    (( reset_epoch <= anchor_epoch )) && reset_epoch=$(( reset_epoch + 86400 ))
+  elif [[ "$reset_time" =~ [0-9]{4} ]]; then
+    # Full date with explicit year ("Apr 26, 2026 7:30pm") — unambiguous.
+    reset_epoch=$(TZ="$reset_tz" date -d "$reset_time" +%s 2>/dev/null) || return 1
+  else
+    # Month/day without year ("Apr 26 7:30pm"): GNU date would assume the
+    # CURRENT year — use the anchor's year instead, rolling forward one year
+    # if that instant had already passed when the entry was written.
+    local anchor_year
+    anchor_year=$(TZ="$reset_tz" date -d "@${anchor_epoch}" +%Y 2>/dev/null) || return 1
+    reset_epoch=$(TZ="$reset_tz" date -d "${reset_time} ${anchor_year}" +%s 2>/dev/null) || return 1
+    if (( reset_epoch <= anchor_epoch )); then
+      reset_epoch=$(TZ="$reset_tz" date -d "${reset_time} $(( anchor_year + 1 ))" +%s 2>/dev/null) || return 1
     fi
   fi
+  # Reset moment already passed → the limit has reset, nothing to wait for
+  # (e.g. a stale entry from a previous period found after a normal exit).
+  (( reset_epoch <= now_epoch )) && return 1
   echo "$reset_epoch"
 }
 
@@ -172,7 +298,7 @@ _rl_watcher() {
     current=$(wc -l < "$session_file" 2>/dev/null | tr -d ' ' || echo 0)
     if (( current > baseline )); then
       if tail -n "+$(( baseline + 1 ))" "$session_file" 2>/dev/null \
-          | grep -qi 'resets .*('; then
+          | grep -qiE '(^|[^[:alnum:]])resets [^(]*[0-9]+(:[0-9][0-9]|[[:space:]]?[ap]m)[^(]*\('; then
         sleep 0.3   # let claude finish writing the entry
         kill -INT "$claude_pid" 2>/dev/null
         return
@@ -199,6 +325,11 @@ _rl_watcher() {
 _run_claude() {
   rm -f "${HOME}/.claude/.rl_warn"   # reset flag — each run starts clean
   local my_pid=$$
+  local -a extra_args=()
+  if _is_truthy "${CLAUDE_SMART_RESUME_SKIP_PERMISSIONS:-}" \
+      && _should_add_skip_permissions "$@"; then
+    extra_args+=(--dangerously-skip-permissions)
+  fi
 
   # Start the watcher before claude. It waits for claude to appear as a child
   # of this shell, then starts JSONL polling for a rate-limit entry.
@@ -226,7 +357,7 @@ _run_claude() {
   local watcher_pid=$!
 
   trap 'true' INT
-  "$CLAUDE_BIN" "$@"
+  "$CLAUDE_BIN" "${extra_args[@]}" "$@"
   trap - INT
 
   kill "$watcher_pid" 2>/dev/null
@@ -297,13 +428,26 @@ main() {
       reset_info=$(get_reset_info "$session_file" "$start_line")
       [[ -z "$reset_info" ]] && break
 
+      # get_reset_info prints "TIME TZ" plus, when available, the entry's own
+      # ISO timestamp on a second line (anchors stale-entry detection: a
+      # "resets 6:20pm" whose moment already passed means the limit has reset
+      # — parse_reset_epoch fails and we exit instead of waiting ~24 h).
+      local reset_anchor=''
+      reset_anchor=$(printf '%s\n' "$reset_info" | sed -n '2p')
+      reset_info=$(printf '%s\n' "$reset_info" | sed -n '1p')
+
       local reset_time='' reset_tz=''
-      reset_time=$(echo "$reset_info" | awk '{print $1}')
-      reset_tz=$(echo "$reset_info"   | awk '{print $2}')
-      reset_epoch=$(parse_reset_epoch "$reset_time" "$reset_tz") || break
+      reset_tz=${reset_info##* }
+      reset_time=${reset_info%" $reset_tz"}
+      reset_epoch=$(parse_reset_epoch "$reset_time" "$reset_tz" "$reset_anchor") || break
     fi
 
     local wake_epoch=$(( reset_epoch + BUFFER_SECS ))
+    local now_epoch
+    now_epoch=$(date +%s)
+    if (( wake_epoch <= now_epoch )); then
+      wake_epoch=$(( now_epoch + BUFFER_SECS ))
+    fi
 
     local session_id=''
     session_id=$(basename "$session_file" .jsonl)
